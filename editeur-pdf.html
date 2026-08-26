@@ -1,0 +1,1345 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Clair - édition discrète de scans</title>
+<meta name="description" content="Outil gratuit pour retoucher, corriger et fusionner tes PDF scannés directement dans le navigateur : recouvrir du texte, dupliquer une croix, OCR, compression, recto-verso. Aucun envoi de fichier.">
+<link rel="canonical" href="https://pdfclair.com/editeur-pdf.html">
+<meta name="robots" content="index, follow">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --bg: #1e2126;
+    --panel: #2a2e35;
+    --border: #3c414a;
+    --text: #e6e8eb;
+    --muted: #9aa1ab;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --danger: #ef4444;
+    --ok: #22c55e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 12px 0 0;
+    white-space: nowrap;
+  }
+  button {
+    background: #3a3f47;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { background: #454b55; }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.primary:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  input[type="file"] { display: none; }
+  .sep { width: 1px; background: var(--border); align-self: stretch; margin: 0 4px; }
+  .spacer { flex: 1; }
+  #pageInfo { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  main {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 24px;
+    background: #14161a;
+  }
+  #stage {
+    position: relative;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    background: white;
+    line-height: 0;
+  }
+  #stage canvas { display: block; max-width: 90vw; }
+  #baseCanvas { position: relative; }
+  #overlayCanvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+  #placeholder {
+    color: var(--muted);
+    font-size: 15px;
+    text-align: center;
+    max-width: 420px;
+    line-height: 1.6;
+  }
+  footer {
+    padding: 6px 14px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  /* Modal */
+  #modalOverlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  #modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    width: 380px;
+    max-width: 90vw;
+  }
+  #modal h2 { font-size: 15px; margin: 0 0 14px 0; }
+  #modal label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 10px 0 4px 0;
+  }
+  #modal input[type="text"], #modal input[type="number"], #modal select {
+    width: 100%;
+    padding: 7px 8px;
+    background: #1e2126;
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 13px;
+  }
+  .colorRow { display: flex; align-items: center; gap: 8px; }
+  .colorRow input[type="color"] { width: 40px; height: 30px; padding: 0; border: none; background: none; }
+  .modalBtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .row2 { display: flex; gap: 10px; }
+  .row2 > div { flex: 1; }
+  #ocrStatus, #copyStatus {
+    display: none;
+    position: absolute;
+    top: 10px; left: 10px;
+    background: rgba(0,0,0,0.75);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    z-index: 10;
+    max-width: calc(100% - 40px);
+  }
+  #zoomLabel { font-size: 12px; color: var(--muted); width: 42px; text-align: center; display: inline-block; }
+  #draftBanner {
+    display: none;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: #3b2f13;
+    border-bottom: 1px solid #7c5a12;
+    font-size: 13px;
+    color: #fde68a;
+  }
+  main { flex: 1; overflow: hidden; display: flex; align-items: stretch; justify-content: flex-start; padding: 0; background: #14161a; }
+  #thumbSidebar {
+    display: none;
+    flex: 0 0 132px;
+    width: 132px;
+    overflow-y: auto;
+    padding: 14px 10px;
+    border-right: 1px solid var(--border);
+    flex-direction: column;
+    gap: 10px;
+    align-items: center;
+  }
+  .thumbItem { cursor: pointer; text-align: center; opacity: 0.75; }
+  .thumbItem:hover { opacity: 1; }
+  .thumbItem.active { opacity: 1; }
+  .thumbItem canvas {
+    display: block;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    background: white;
+  }
+  .thumbItem.active canvas { border-color: var(--accent); }
+  .thumbLabel { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .mainCenter { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 24px; }
+  #boxActions { display: none; position: absolute; z-index: 20; gap: 6px; }
+  #boxActions button { padding: 5px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🖊 PDF Clair</h1>
+  <button id="btnOpen" class="primary">Ouvrir un PDF...</button>
+  <input type="file" id="fileInput" accept="application/pdf">
+  <button id="btnSave" disabled>Enregistrer le PDF</button>
+  <label id="searchableLabel" style="display:none; align-items:center; gap:5px; font-size:12px; color:var(--muted); cursor:pointer;">
+    <input type="checkbox" id="chkSearchable"> Texte cherchable (OCR complet, plus lent)
+  </label>
+  <div class="sep"></div>
+  <button id="btnPrev" disabled>◀ Page préc.</button>
+  <span id="pageInfo">Aucun PDF ouvert</span>
+  <button id="btnNext" disabled>Page suiv. ▶</button>
+  <div class="sep"></div>
+  <button id="btnZoomOut" disabled>−</button>
+  <span id="zoomLabel">100%</span>
+  <button id="btnZoomIn" disabled>+</button>
+  <div class="sep"></div>
+  <button id="btnModeFree" disabled>Zone libre</button>
+  <button id="btnModeOcr" disabled>OCR (cliquer un mot)</button>
+  <button id="btnModeCopy" disabled>Copier-coller</button>
+  <div class="sep"></div>
+  <button id="btnUndo" disabled>Annuler dernière modif</button>
+  <div class="spacer"></div>
+</header>
+
+<header id="toolbar2">
+  <span style="font-size:12px; color:var(--muted);">Outils :</span>
+  <button id="btnAddFiles">Ajouter des pages...</button>
+  <input type="file" id="addFilesInput" accept="application/pdf,image/*" multiple style="display:none;">
+  <button id="btnRemoveBlanks">Supprimer les pages blanches</button>
+  <button id="btnDuplex">Recto-verso...</button>
+  <div class="sep"></div>
+  <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);">
+    Taille visée à l'export :
+    <select id="selTargetSize">
+      <option value="">qualité normale</option>
+      <option value="5">moins de 5 Mo</option>
+      <option value="2">moins de 2 Mo</option>
+      <option value="1">moins de 1 Mo</option>
+    </select>
+  </label>
+</header>
+
+<div id="draftBanner">
+  <span id="draftBannerText"></span>
+  <button id="draftResume" class="primary">Reprendre ce brouillon</button>
+  <button id="draftDiscard">Ignorer</button>
+</div>
+
+<main>
+  <aside id="thumbSidebar"></aside>
+  <div class="mainCenter">
+    <div id="placeholder">
+      Ouvre un PDF scanné pour commencer.<br><br>
+      Ensuite, dessine un rectangle avec la souris sur la zone à corriger,
+      passe en mode OCR pour cliquer directement sur un mot détecté,
+      ou en mode "Copier-coller" pour dupliquer une croix/coche déjà présente ailleurs.
+    </div>
+    <div id="stage" style="display:none;">
+      <div id="ocrStatus">Analyse OCR en cours...</div>
+      <div id="copyStatus"></div>
+      <canvas id="baseCanvas"></canvas>
+      <canvas id="overlayCanvas"></canvas>
+      <div id="boxActions">
+        <button id="boxConfirm" class="primary">✓ Valider</button>
+        <button id="boxCancel">✕ Annuler</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Tout se passe dans ton navigateur, en local — aucun fichier n'est envoyé sur internet.
+</footer>
+
+<div id="modalOverlay">
+  <div id="modal">
+    <h2>Corriger cette zone</h2>
+    <label>Nouveau texte (laisser vide pour juste recouvrir)</label>
+    <input type="text" id="modalText">
+
+    <div class="row2">
+      <div>
+        <label>Taille du texte</label>
+        <input type="number" id="modalFontSize" min="6" max="300">
+      </div>
+      <div>
+        <label>Police</label>
+        <select id="modalFont">
+          <option value="Arial, Helvetica, sans-serif">Arial</option>
+          <option value="'Times New Roman', Times, serif">Times New Roman</option>
+          <option value="'Courier New', Courier, monospace">Courier New</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="Verdana, sans-serif">Verdana</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row2">
+      <div>
+        <label>Couleur du fond</label>
+        <div class="colorRow"><input type="color" id="modalFillColor"></div>
+      </div>
+      <div>
+        <label>Couleur du texte</label>
+        <div class="colorRow"><input type="color" id="modalTextColor"></div>
+      </div>
+    </div>
+
+    <div class="modalBtns">
+      <button id="modalCancel">Annuler</button>
+      <button id="modalApply" class="primary">Appliquer</button>
+    </div>
+  </div>
+</div>
+
+<div id="duplexOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:50;">
+  <div style="background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:20px; width:440px; max-width:90vw;">
+    <h2 style="font-size:15px; margin:0 0 6px;">Fusionner recto-verso</h2>
+    <p style="font-size:12.5px; color:var(--muted); margin:0 0 14px;">
+      Pour un scanner sans recto-verso automatique : scanne d'abord tous les rectos dans l'ordre,
+      puis tous les versos (en général obtenus en ordre inverse si tu as juste retourné la pile).
+      Ça reconstitue un seul PDF dans le bon ordre.
+    </p>
+
+    <label style="display:block; font-size:12px; color:var(--muted); margin:10px 0 4px;">Fichier des rectos (PDF ou images, dans l'ordre)</label>
+    <input type="file" id="duplexRecto" accept="application/pdf,image/*" multiple
+      style="width:100%; padding:6px; background:#1e2126; border:1px solid var(--border); color:var(--text); border-radius:6px; font-size:12.5px;">
+
+    <label style="display:block; font-size:12px; color:var(--muted); margin:14px 0 4px;">Fichier des versos</label>
+    <input type="file" id="duplexVerso" accept="application/pdf,image/*" multiple
+      style="width:100%; padding:6px; background:#1e2126; border:1px solid var(--border); color:var(--text); border-radius:6px; font-size:12.5px;">
+
+    <label style="display:flex; align-items:center; gap:8px; margin-top:14px; font-size:13px;">
+      <input type="checkbox" id="duplexReversed" checked>
+      Les versos ont été scannés en ordre inverse (cas le plus courant)
+    </label>
+
+    <div id="duplexStatus" style="font-size:12.5px; color:var(--muted); margin-top:10px; min-height:16px;"></div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+      <button id="duplexCancel">Annuler</button>
+      <button id="duplexApply" class="primary">Créer le PDF fusionné</button>
+    </div>
+  </div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const RENDER_SCALE = 2.2; // qualité de travail (~200 dpi)
+
+const state = {
+  pages: [],        // { canvas: HTMLCanvasElement, ctx }
+  pageIndex: 0,
+  mode: "free",      // "free" | "ocr" | "copy"
+  undoStack: [],     // { pageIndex, imageData }
+  ocrWords: [],       // boîtes détectées de la page courante
+  selecting: null,    // {x0,y0} en coordonnées réelles pendant un drag
+  pendingBox: null,   // rectangle en attente de confirmation dans la modale
+  copyStep: "source",  // "source" | "target" (mode copier-coller)
+  clipboard: null,     // { canvas, w, h } zone copiée
+  zoom: 1,             // niveau de zoom d'affichage (1 = ajusté à la fenêtre)
+  editingBox: null,    // {x0,y0,x1,y1} rectangle en cours d'ajustement (mode "free")
+  boxDrag: null,       // {type:"move"|"resize", handle?, startX, startY, orig} pendant un déplacement/redimensionnement
+};
+
+const el = (id) => document.getElementById(id);
+const fileInput = el("fileInput");
+const baseCanvas = el("baseCanvas");
+const overlayCanvas = el("overlayCanvas");
+const stage = el("stage");
+const placeholder = el("placeholder");
+const pageInfo = el("pageInfo");
+
+el("btnOpen").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", onFileChosen);
+el("btnPrev").addEventListener("click", () => gotoPage(state.pageIndex - 1));
+el("btnNext").addEventListener("click", () => gotoPage(state.pageIndex + 1));
+el("btnSave").addEventListener("click", savePdf);
+el("btnUndo").addEventListener("click", undo);
+el("btnZoomOut").addEventListener("click", () => setZoom(state.zoom - ZOOM_STEP));
+el("btnZoomIn").addEventListener("click", () => setZoom(state.zoom + ZOOM_STEP));
+el("boxConfirm").addEventListener("click", () => {
+  if (!state.editingBox) return;
+  const box = state.editingBox;
+  state.editingBox = null;
+  el("boxActions").style.display = "none";
+  openModalForBox(box, "");
+});
+el("boxCancel").addEventListener("click", cancelEditingBox);
+
+// Raccourcis clavier : Ctrl/Cmd+Z pour annuler, flèches gauche/droite pour changer de page
+document.addEventListener("keydown", (evt) => {
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+  if (typing) return;
+  if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === "z") {
+    evt.preventDefault();
+    undo();
+  } else if (evt.key === "ArrowLeft") {
+    gotoPage(state.pageIndex - 1);
+  } else if (evt.key === "ArrowRight") {
+    gotoPage(state.pageIndex + 1);
+  } else if (evt.key === "Escape") {
+    if (el("modalOverlay").style.display === "flex") closeModal();
+    else if (state.editingBox) cancelEditingBox();
+  } else if (evt.key === "Enter" && state.editingBox && el("modalOverlay").style.display !== "flex") {
+    evt.preventDefault();
+    el("boxConfirm").click();
+  }
+});
+el("btnModeFree").addEventListener("click", () => setMode("free"));
+el("btnModeOcr").addEventListener("click", () => setMode("ocr"));
+el("btnModeCopy").addEventListener("click", () => {
+  if (state.mode === "copy") {
+    // déjà en mode copier-coller : on repart sur une nouvelle copie
+    state.clipboard = null;
+    state.copyStep = "source";
+    clearOverlay();
+    updateCopyStatus();
+  } else {
+    setMode("copy");
+  }
+});
+el("modalCancel").addEventListener("click", closeModal);
+el("modalApply").addEventListener("click", applyModal);
+
+el("btnAddFiles").addEventListener("click", () => el("addFilesInput").click());
+el("addFilesInput").addEventListener("change", onAddFiles);
+el("btnRemoveBlanks").addEventListener("click", removeBlankPages);
+el("btnDuplex").addEventListener("click", () => { el("duplexOverlay").style.display = "flex"; });
+el("duplexCancel").addEventListener("click", () => { el("duplexOverlay").style.display = "none"; });
+el("duplexApply").addEventListener("click", runDuplexMerge);
+
+// ------------------------------------------------------- chargement fichiers --
+// Rend un PDF (ArrayBuffer) en une page-entrée {canvas, ctx} par page, à la
+// résolution de travail. Réutilisé pour l'ouverture initiale, la fusion de
+// fichiers, et le recto-verso.
+async function pdfBufferToPages(buf) {
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    pages.push({ canvas, ctx });
+  }
+  return pages;
+}
+
+// Charge une image (jpg/png/heic une fois décodée par le navigateur, etc.)
+// comme une unique page-entrée, à sa résolution native.
+async function imageFileToPage(file) {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0);
+  return { canvas, ctx };
+}
+
+// Convertit une liste de fichiers (PDF et/ou images, dans l'ordre) en une
+// liste à plat de pages-entrées {canvas, ctx}.
+async function filesToPages(fileList) {
+  const pages = [];
+  for (const file of Array.from(fileList)) {
+    if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
+      const buf = await file.arrayBuffer();
+      pages.push(...(await pdfBufferToPages(buf)));
+    } else {
+      pages.push(await imageFileToPage(file));
+    }
+  }
+  return pages;
+}
+
+function resetEditingState() {
+  state.pageIndex = 0;
+  state.undoStack = [];
+  state.ocrWords = [];
+  state.clipboard = null;
+  state.copyStep = "source";
+  state.zoom = 1;
+  state.editingBox = null;
+}
+
+function enableMainUi() {
+  placeholder.style.display = "none";
+  stage.style.display = "block";
+  ["btnSave", "btnPrev", "btnNext", "btnModeFree", "btnModeOcr", "btnModeCopy", "btnZoomOut", "btnZoomIn"].forEach(id => el(id).disabled = false);
+  el("searchableLabel").style.display = "inline-flex";
+  el("toolbar2").style.display = "flex";
+}
+
+async function onFileChosen(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  el("draftBanner").style.display = "none";
+  state.pages = await filesToPages([file]);
+  resetEditingState();
+  enableMainUi();
+  renderCurrentPage();
+}
+
+async function onAddFiles(e) {
+  const files = e.target.files;
+  if (!files || !files.length) return;
+  const btn = el("btnAddFiles");
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Ajout en cours...";
+  try {
+    const newPages = await filesToPages(files);
+    const wasEmpty = state.pages.length === 0;
+    if (wasEmpty) el("draftBanner").style.display = "none";
+    state.pages.push(...newPages);
+    if (wasEmpty) {
+      resetEditingState();
+      enableMainUi();
+    }
+    state.pageIndex = state.pages.length - newPages.length; // saute sur la première page ajoutée
+    renderCurrentPage();
+  } catch (err) {
+    alert("Erreur en ajoutant ces fichiers : " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+    e.target.value = ""; // permet de rechoisir les mêmes fichiers plus tard
+  }
+}
+
+// ------------------------------------------------------------------ zoom --
+const ZOOM_MIN = 0.3, ZOOM_MAX = 3, ZOOM_STEP = 0.15;
+
+function setZoom(z) {
+  state.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+  applyZoom();
+}
+
+function applyZoom() {
+  if (!state.pages.length) return;
+  // revient d'abord à la taille naturelle (ajustée par le CSS max-width) pour la mesurer
+  baseCanvas.style.width = "";
+  overlayCanvas.style.width = "";
+  baseCanvas.style.maxWidth = "";
+  overlayCanvas.style.maxWidth = "";
+  if (Math.abs(state.zoom - 1) < 0.001) {
+    el("zoomLabel").textContent = "100%";
+    if (state.editingBox) drawEditingBox();
+    return;
+  }
+  const naturalWidth = baseCanvas.getBoundingClientRect().width;
+  const newWidth = naturalWidth * state.zoom;
+  // le zoom doit pouvoir dépasser la limite CSS "max-width: 90vw" prévue pour l'affichage par défaut
+  baseCanvas.style.maxWidth = "none";
+  overlayCanvas.style.maxWidth = "none";
+  baseCanvas.style.width = newWidth + "px";
+  overlayCanvas.style.width = newWidth + "px";
+  el("zoomLabel").textContent = Math.round(state.zoom * 100) + "%";
+  if (state.editingBox) drawEditingBox();
+}
+
+// ------------------------------------------------------------ miniatures --
+function renderThumbnails() {
+  const sidebar = el("thumbSidebar");
+  sidebar.innerHTML = "";
+  if (!state.pages.length) { sidebar.style.display = "none"; return; }
+  sidebar.style.display = "flex";
+  const frag = document.createDocumentFragment();
+  state.pages.forEach((p, idx) => {
+    const item = document.createElement("div");
+    item.className = "thumbItem" + (idx === state.pageIndex ? " active" : "");
+    const c = document.createElement("canvas");
+    const maxW = 100;
+    const scale = maxW / p.canvas.width;
+    c.width = maxW;
+    c.height = Math.max(1, Math.round(p.canvas.height * scale));
+    c.getContext("2d").drawImage(p.canvas, 0, 0, c.width, c.height);
+    const label = document.createElement("div");
+    label.className = "thumbLabel";
+    label.textContent = idx + 1;
+    item.appendChild(c);
+    item.appendChild(label);
+    item.addEventListener("click", () => gotoPage(idx));
+    frag.appendChild(item);
+  });
+  sidebar.appendChild(frag);
+  const activeEl = sidebar.querySelector(".thumbItem.active");
+  if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+}
+
+function renderCurrentPage() {
+  state.editingBox = null;
+  state.boxDrag = null;
+  el("boxActions").style.display = "none";
+
+  const p = state.pages[state.pageIndex];
+  baseCanvas.width = p.canvas.width;
+  baseCanvas.height = p.canvas.height;
+  baseCanvas.getContext("2d").drawImage(p.canvas, 0, 0);
+
+  overlayCanvas.width = p.canvas.width;
+  overlayCanvas.height = p.canvas.height;
+  clearOverlay();
+
+  pageInfo.textContent = `Page ${state.pageIndex + 1} / ${state.pages.length}`;
+  el("btnPrev").disabled = state.pageIndex === 0;
+  el("btnNext").disabled = state.pageIndex === state.pages.length - 1;
+  updateUndoBtn();
+
+  if (state.mode === "ocr") runOcr();
+
+  applyZoom();
+  renderThumbnails();
+  scheduleAutosave();
+}
+
+function gotoPage(idx) {
+  if (idx < 0 || idx >= state.pages.length) return;
+  state.pageIndex = idx;
+  state.ocrWords = [];
+  renderCurrentPage();
+}
+
+// Estime la proportion de pixels "non blancs" d'une page, en échantillonnant
+// pour rester rapide même sur une page haute résolution.
+function pageInkRatio(canvas) {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const w = canvas.width, h = canvas.height;
+  const maxSamples = 250000;
+  const totalPixels = w * h;
+  const stride = Math.max(1, Math.floor(totalPixels / maxSamples));
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let nonWhite = 0, sampled = 0;
+  for (let p = 0; p < totalPixels; p += stride) {
+    const i = p * 4;
+    if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) nonWhite++;
+    sampled++;
+  }
+  return sampled ? nonWhite / sampled : 0;
+}
+
+function removeBlankPages() {
+  if (!state.pages.length) return;
+  const BLANK_THRESHOLD = 0.003; // 0.3% de pixels non blancs ou moins = page considérée vide
+  const blankIndexes = [];
+  state.pages.forEach((p, idx) => {
+    if (pageInkRatio(p.canvas) <= BLANK_THRESHOLD) blankIndexes.push(idx);
+  });
+
+  if (!blankIndexes.length) {
+    alert("Aucune page blanche détectée.");
+    return;
+  }
+  if (blankIndexes.length === state.pages.length) {
+    alert("Toutes les pages semblent vides — suppression annulée par sécurité.");
+    return;
+  }
+
+  const pageNumbers = blankIndexes.map(i => i + 1).join(", ");
+  const confirmed = confirm(
+    `${blankIndexes.length} page(s) blanche(s) détectée(s) : page(s) ${pageNumbers}.\n` +
+    `Les supprimer définitivement de ce document ?`
+  );
+  if (!confirmed) return;
+
+  state.pages = state.pages.filter((_, idx) => !blankIndexes.includes(idx));
+  state.undoStack = []; // suppression de pages = on ne peut plus se fier aux snapshots par page
+  state.pageIndex = Math.min(state.pageIndex, state.pages.length - 1);
+  state.ocrWords = [];
+  renderCurrentPage();
+}
+
+function setMode(mode) {
+  state.editingBox = null;
+  state.boxDrag = null;
+  el("boxActions").style.display = "none";
+  state.mode = mode;
+  el("btnModeFree").style.borderColor = mode === "free" ? "var(--accent)" : "var(--border)";
+  el("btnModeOcr").style.borderColor = mode === "ocr" ? "var(--accent)" : "var(--border)";
+  el("btnModeCopy").style.borderColor = mode === "copy" ? "var(--accent)" : "var(--border)";
+  clearOverlay();
+  el("copyStatus").style.display = "none";
+  if (mode === "ocr") runOcr();
+  if (mode === "copy") {
+    state.copyStep = state.clipboard ? "target" : "source";
+    updateCopyStatus();
+  }
+}
+
+function updateCopyStatus() {
+  const status = el("copyStatus");
+  if (state.mode !== "copy") { status.style.display = "none"; return; }
+  status.style.display = "block";
+  status.textContent = state.copyStep === "source"
+    ? "Dessine un rectangle autour de la zone à copier (ex : une croix déjà cochée)."
+    : "Zone copiée ✓ — clique à l'endroit où la coller (tu peux coller plusieurs fois). Reclique sur \"Copier-coller\" pour copier une autre zone.";
+}
+
+function clearOverlay() {
+  overlayCanvas.getContext("2d").clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+}
+
+// ---------------------------------------------------------------- souris --
+function canvasCoords(evt) {
+  const rect = overlayCanvas.getBoundingClientRect();
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  return {
+    x: (evt.clientX - rect.left) * scaleX,
+    y: (evt.clientY - rect.top) * scaleY,
+  };
+}
+
+function isDragSelectMode() {
+  return state.mode === "free" || (state.mode === "copy" && state.copyStep === "source");
+}
+
+// ------------------------------------------------ ajuster une sélection --
+// Après un premier tracé en mode "Zone libre", le rectangle reste modifiable
+// (déplacement, redimensionnement par les coins) avant de valider la modale.
+function getDisplayScale() {
+  // pixels "canvas" (résolution réelle) par pixel CSS affiché — dépend du zoom courant.
+  const rect = overlayCanvas.getBoundingClientRect();
+  return rect.width ? overlayCanvas.width / rect.width : 1;
+}
+
+function boxHandles(box) {
+  return {
+    nw: { x: box.x0, y: box.y0 },
+    ne: { x: box.x1, y: box.y0 },
+    sw: { x: box.x0, y: box.y1 },
+    se: { x: box.x1, y: box.y1 },
+  };
+}
+
+function hitTestBox(x, y, box) {
+  const hs = 9 * getDisplayScale() * 1.4; // zone de saisie un peu plus large que la poignée dessinée
+  for (const [handle, pos] of Object.entries(boxHandles(box))) {
+    if (Math.abs(x - pos.x) <= hs && Math.abs(y - pos.y) <= hs) return { type: "resize", handle };
+  }
+  if (x >= box.x0 && x <= box.x1 && y >= box.y0 && y <= box.y1) return { type: "move" };
+  return null;
+}
+
+function drawEditingBox() {
+  clearOverlay();
+  const box = state.editingBox;
+  if (!box) return;
+  const ctx = overlayCanvas.getContext("2d");
+  ctx.strokeStyle = "red";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+  const hs = 9 * getDisplayScale();
+  ctx.fillStyle = "red";
+  Object.values(boxHandles(box)).forEach(p => ctx.fillRect(p.x - hs / 2, p.y - hs / 2, hs, hs));
+  positionBoxActions(box);
+}
+
+function positionBoxActions(box) {
+  const rect = overlayCanvas.getBoundingClientRect();
+  const cssPerCanvas = overlayCanvas.width ? rect.width / overlayCanvas.width : 1;
+  const actions = el("boxActions");
+  actions.style.display = "flex";
+  const left = Math.max(0, Math.min(box.x1 * cssPerCanvas, stage.clientWidth - 140));
+  const top = Math.max(0, Math.min(box.y1 * cssPerCanvas + 6, stage.clientHeight - 30));
+  actions.style.left = left + "px";
+  actions.style.top = top + "px";
+}
+
+function cancelEditingBox() {
+  state.editingBox = null;
+  state.boxDrag = null;
+  el("boxActions").style.display = "none";
+  clearOverlay();
+  if (state.mode === "ocr") drawOcrOverlay();
+}
+
+overlayCanvas.addEventListener("mousedown", (evt) => {
+  if (!state.pages.length) return;
+  const { x, y } = canvasCoords(evt);
+
+  if (state.mode === "free" && state.editingBox) {
+    const hit = hitTestBox(x, y, state.editingBox);
+    if (hit) {
+      state.boxDrag = { ...hit, startX: x, startY: y, orig: { ...state.editingBox } };
+      return;
+    }
+    cancelEditingBox(); // clic en dehors du rectangle : on l'abandonne et on repart sur une nouvelle sélection
+  }
+
+  if (!isDragSelectMode()) return;
+  state.selecting = { x0: x, y0: y };
+});
+
+// mousemove/mouseup sont écoutés sur window (et non juste sur le canvas) pour
+// ne pas rester "collé" en plein glisser-déposer si le curseur sort du canvas
+// avant le relâchement du bouton (ça arrive très facilement en bord de page).
+window.addEventListener("mousemove", (evt) => {
+  if (state.boxDrag) {
+    const { x, y } = canvasCoords(evt);
+    const d = state.boxDrag;
+    let box;
+    if (d.type === "move") {
+      const w = d.orig.x1 - d.orig.x0, h = d.orig.y1 - d.orig.y0;
+      const dx = x - d.startX, dy = y - d.startY;
+      const nx0 = Math.max(0, Math.min(overlayCanvas.width - w, d.orig.x0 + dx));
+      const ny0 = Math.max(0, Math.min(overlayCanvas.height - h, d.orig.y0 + dy));
+      box = { x0: nx0, y0: ny0, x1: nx0 + w, y1: ny0 + h };
+    } else {
+      const opp = {
+        nw: { x: d.orig.x1, y: d.orig.y1 },
+        ne: { x: d.orig.x0, y: d.orig.y1 },
+        sw: { x: d.orig.x1, y: d.orig.y0 },
+        se: { x: d.orig.x0, y: d.orig.y0 },
+      }[d.handle];
+      const cx = Math.max(0, Math.min(overlayCanvas.width, x));
+      const cy = Math.max(0, Math.min(overlayCanvas.height, y));
+      box = { x0: Math.min(opp.x, cx), y0: Math.min(opp.y, cy), x1: Math.max(opp.x, cx), y1: Math.max(opp.y, cy) };
+      if (box.x1 - box.x0 < 8 || box.y1 - box.y0 < 8) return; // évite l'inversion/collapse du rectangle
+    }
+    state.editingBox = box;
+    drawEditingBox();
+    return;
+  }
+
+  if (!state.selecting || !isDragSelectMode()) return;
+  const { x, y } = canvasCoords(evt);
+  const ctx = overlayCanvas.getContext("2d");
+  clearOverlay();
+  ctx.strokeStyle = state.mode === "copy" ? "#00c853" : "red";
+  ctx.lineWidth = 2;
+  const { x0, y0 } = state.selecting;
+  ctx.strokeRect(Math.min(x0, x), Math.min(y0, y), Math.abs(x - x0), Math.abs(y - y0));
+});
+
+window.addEventListener("mouseup", (evt) => {
+  if (state.boxDrag) { state.boxDrag = null; return; }
+  if (!state.selecting || !isDragSelectMode()) return;
+  const { x, y } = canvasCoords(evt);
+  const { x0, y0 } = state.selecting;
+  state.selecting = null;
+  const box = {
+    x0: Math.min(x0, x), y0: Math.min(y0, y),
+    x1: Math.max(x0, x), y1: Math.max(y0, y),
+  };
+  if (box.x1 - box.x0 < 4 || box.y1 - box.y0 < 4) { clearOverlay(); return; }
+
+  if (state.mode === "free") {
+    // Le rectangle reste ajustable (déplacer / redimensionner) avant de valider,
+    // au lieu d'ouvrir directement la modale.
+    state.editingBox = box;
+    drawEditingBox();
+  } else {
+    captureClipboard(box);
+  }
+});
+
+overlayCanvas.addEventListener("click", (evt) => {
+  if (state.mode === "ocr") {
+    const { x, y } = canvasCoords(evt);
+    const hit = state.ocrWords.find(w => x >= w.x0 && x <= w.x1 && y >= w.y0 && y <= w.y1);
+    if (hit) {
+      const pad = 3;
+      openModalForBox({ x0: hit.x0 - pad, y0: hit.y0 - pad, x1: hit.x1 + pad, y1: hit.y1 + pad }, hit.text);
+    }
+  } else if (state.mode === "copy" && state.copyStep === "target") {
+    const { x, y } = canvasCoords(evt);
+    pasteClipboardAt(x, y);
+  }
+});
+
+// ------------------------------------------------------------ copier-coller --
+function captureClipboard(box) {
+  const srcCanvas = state.pages[state.pageIndex].canvas;
+  const w = Math.max(1, Math.round(box.x1 - box.x0));
+  const h = Math.max(1, Math.round(box.y1 - box.y0));
+  const clip = document.createElement("canvas");
+  clip.width = w;
+  clip.height = h;
+  clip.getContext("2d").drawImage(srcCanvas, box.x0, box.y0, w, h, 0, 0, w, h);
+
+  state.clipboard = { canvas: clip, w, h };
+  state.copyStep = "target";
+  state.suppressNextClick = true; // le mouseup de cette sélection déclenche aussi un "click" juste après
+  clearOverlay();
+  updateCopyStatus();
+}
+
+function pasteClipboardAt(cx, cy) {
+  if (state.suppressNextClick) { state.suppressNextClick = false; return; }
+  const clip = state.clipboard;
+  if (!clip) return;
+  pushUndo();
+  const ctx = state.pages[state.pageIndex].ctx;
+  ctx.drawImage(clip.canvas, cx - clip.w / 2, cy - clip.h / 2);
+  invalidateOcrCache(state.pageIndex);
+  renderCurrentPage();
+  state.mode = "copy";
+  state.copyStep = "target";
+  updateCopyStatus();
+}
+
+// -------------------------------------------------------------------- OCR --
+let tesseractWorker = null;
+
+async function getTesseractWorker() {
+  if (!tesseractWorker) {
+    tesseractWorker = await Tesseract.createWorker("fra+eng");
+  }
+  return tesseractWorker;
+}
+
+// Analyse OCR d'une page, avec mise en cache (utilisé à la fois par le mode
+// "cliquer un mot" et par l'export en texte cherchable, pour ne jamais
+// relancer deux fois l'analyse d'une même page inchangée).
+async function ensureOcrForPage(idx) {
+  const p = state.pages[idx];
+  if (p.ocrCache) return p.ocrCache;
+  const worker = await getTesseractWorker();
+  const { data } = await worker.recognize(p.canvas);
+  const words = (data.words || [])
+    .filter(w => w.text && w.text.trim().length && w.confidence > 35)
+    .map(w => ({ text: w.text, x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }));
+  p.ocrCache = words;
+  return words;
+}
+
+// invalide le cache OCR d'une page (après une modification de son contenu)
+function invalidateOcrCache(idx) {
+  if (state.pages[idx]) state.pages[idx].ocrCache = null;
+}
+
+async function runOcr() {
+  if (!state.pages.length) return;
+  el("ocrStatus").style.display = "block";
+  try {
+    state.ocrWords = await ensureOcrForPage(state.pageIndex);
+  } catch (err) {
+    console.error(err);
+    alert("Erreur pendant l'analyse OCR : " + err.message);
+    state.ocrWords = [];
+  }
+  el("ocrStatus").style.display = "none";
+  drawOcrOverlay();
+}
+
+function drawOcrOverlay() {
+  clearOverlay();
+  const ctx = overlayCanvas.getContext("2d");
+  ctx.strokeStyle = "#00c853";
+  ctx.lineWidth = 1.5;
+  state.ocrWords.forEach(w => ctx.strokeRect(w.x0, w.y0, w.x1 - w.x0, w.y1 - w.y0));
+}
+
+// ---------------------------------------------------------------- modale --
+function sampleBackground(ctx, box) {
+  const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
+  const x1 = Math.min(ctx.canvas.width, Math.ceil(box.x1)), y1 = Math.min(ctx.canvas.height, Math.ceil(box.y1));
+  if (x1 <= x0 || y1 <= y0) return "#ffffff";
+  const border = 2;
+  const samples = [];
+  const data = ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+  const w = x1 - x0, h = y1 - y0;
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < border; y++) samples.push(pix(data, w, x, y));
+    for (let y = h - border; y < h; y++) if (y >= 0) samples.push(pix(data, w, x, y));
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < border; x++) samples.push(pix(data, w, x, y));
+    for (let x = w - border; x < w; x++) if (x >= 0) samples.push(pix(data, w, x, y));
+  }
+  return medianColor(samples);
+}
+
+function sampleDarkColor(ctx, box) {
+  const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
+  const x1 = Math.min(ctx.canvas.width, Math.ceil(box.x1)), y1 = Math.min(ctx.canvas.height, Math.ceil(box.y1));
+  if (x1 <= x0 || y1 <= y0) return "#000000";
+  const data = ctx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
+  const w = x1 - x0, h = y1 - y0;
+  let darkest = [255, 255, 255], darkestSum = 765;
+  const stepX = Math.max(1, Math.floor(w / 40)), stepY = Math.max(1, Math.floor(h / 20));
+  for (let x = 0; x < w; x += stepX) {
+    for (let y = 0; y < h; y += stepY) {
+      const c = pix(data, w, x, y);
+      const sum = c[0] + c[1] + c[2];
+      if (sum < darkestSum) { darkestSum = sum; darkest = c; }
+    }
+  }
+  return rgbToHex(darkest);
+}
+
+function pix(data, w, x, y) {
+  const i = (y * w + x) * 4;
+  return [data[i], data[i + 1], data[i + 2]];
+}
+function medianColor(samples) {
+  if (!samples.length) return "#ffffff";
+  const r = samples.map(s => s[0]).sort((a, b) => a - b);
+  const g = samples.map(s => s[1]).sort((a, b) => a - b);
+  const b = samples.map(s => s[2]).sort((a, b) => a - b);
+  const m = Math.floor(samples.length / 2);
+  return rgbToHex([r[m], g[m], b[m]]);
+}
+function rgbToHex([r, g, b]) {
+  return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+}
+
+function openModalForBox(box, presetText) {
+  state.pendingBox = box;
+  const ctx = state.pages[state.pageIndex].ctx;
+  el("modalText").value = presetText || "";
+  el("modalFontSize").value = Math.max(8, Math.round((box.y1 - box.y0) * 0.72));
+  el("modalFont").value = "Arial, Helvetica, sans-serif";
+  el("modalFillColor").value = sampleBackground(ctx, box);
+  el("modalTextColor").value = presetText ? sampleDarkColor(ctx, box) : "#000000";
+  el("modalOverlay").style.display = "flex";
+  el("modalText").focus();
+}
+
+function closeModal() {
+  el("modalOverlay").style.display = "none";
+  state.pendingBox = null;
+  clearOverlay();
+  if (state.mode === "ocr") drawOcrOverlay();
+}
+
+function applyModal() {
+  const box = state.pendingBox;
+  if (!box) return;
+  pushUndo();
+
+  const ctx = state.pages[state.pageIndex].ctx;
+  const fill = el("modalFillColor").value;
+  const textColor = el("modalTextColor").value;
+  const fontSize = parseInt(el("modalFontSize").value, 10) || 16;
+  const fontFamily = el("modalFont").value;
+  const text = el("modalText").value;
+
+  ctx.fillStyle = fill;
+  ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+
+  if (text) {
+    ctx.fillStyle = textColor;
+    ctx.font = `${fontSize}px ${fontFamily}`;
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, box.x0 + 3, (box.y0 + box.y1) / 2);
+  }
+
+  el("modalOverlay").style.display = "none";
+  state.pendingBox = null;
+  state.ocrWords = []; // les positions ne sont plus valides après édition
+  invalidateOcrCache(state.pageIndex);
+  renderCurrentPage();
+}
+
+// ----------------------------------------------------------------- undo --
+function pushUndo() {
+  const p = state.pages[state.pageIndex];
+  const snap = p.ctx.getImageData(0, 0, p.canvas.width, p.canvas.height);
+  state.undoStack.push({ pageIndex: state.pageIndex, imageData: snap });
+  if (state.undoStack.length > 30) state.undoStack.shift();
+  updateUndoBtn();
+}
+function updateUndoBtn() {
+  el("btnUndo").disabled = state.undoStack.length === 0;
+}
+function undo() {
+  const last = state.undoStack.pop();
+  if (!last) return;
+  const p = state.pages[last.pageIndex];
+  p.ctx.putImageData(last.imageData, 0, 0);
+  state.pageIndex = last.pageIndex;
+  state.ocrWords = [];
+  invalidateOcrCache(last.pageIndex);
+  renderCurrentPage();
+}
+
+// ----------------------------------------------------------------- save --
+// jsPDF force le mode "portrait" par défaut et intervertit largeur/hauteur si
+// on ne précise pas l'orientation : sur une page plus large que haute
+// (paysage), ça déformait l'image. On l'indique donc toujours explicitement.
+const orientOfWH = (w, h) => (w > h ? "l" : "p");
+
+// Construit un document jsPDF complet à partir de state.pages, avec un
+// facteur de qualité JPEG et un facteur d'échelle donnés (utilisé pour la
+// recherche d'une taille de fichier cible). onProgress(idx, total) est
+// appelé avant chaque page pour permettre d'afficher une progression.
+async function buildPdfDoc({ quality, scale, searchable, onProgress }) {
+  const { jsPDF } = window.jspdf;
+  const dims = state.pages.map(p => ({
+    w: Math.max(1, Math.round(p.canvas.width * scale)),
+    h: Math.max(1, Math.round(p.canvas.height * scale)),
+  }));
+  const doc = new jsPDF({ unit: "px", format: [dims[0].w, dims[0].h], orientation: orientOfWH(dims[0].w, dims[0].h) });
+
+  for (let idx = 0; idx < state.pages.length; idx++) {
+    if (onProgress) onProgress(idx, state.pages.length);
+    const p = state.pages[idx];
+    const { w, h } = dims[idx];
+    if (idx > 0) doc.addPage([w, h], orientOfWH(w, h));
+
+    let srcCanvas = p.canvas;
+    if (scale !== 1) {
+      srcCanvas = document.createElement("canvas");
+      srcCanvas.width = w;
+      srcCanvas.height = h;
+      srcCanvas.getContext("2d").drawImage(p.canvas, 0, 0, w, h);
+    }
+    const dataUrl = srcCanvas.toDataURL("image/jpeg", quality);
+    doc.addImage(dataUrl, "JPEG", 0, 0, w, h);
+
+    if (searchable) {
+      const words = await ensureOcrForPage(idx);
+      words.forEach(word => {
+        const wh = (word.y1 - word.y0) * scale;
+        if (wh < 4 || !word.text) return;
+        // Couche de texte invisible calée sur la position détectée par l'OCR,
+        // superposée à l'image du scan : le PDF reste visuellement identique
+        // mais devient sélectionnable / cherchable / copiable.
+        doc.setFontSize(wh);
+        const baseline = word.y0 * scale + wh * 0.85;
+        doc.text(word.text, word.x0 * scale, baseline, { renderingMode: "invisible" });
+      });
+    }
+  }
+  return doc;
+}
+
+async function savePdf() {
+  if (!state.pages.length) return;
+  const makeSearchable = el("chkSearchable").checked;
+  const targetMB = parseFloat(el("selTargetSize").value) || null;
+
+  const saveBtn = el("btnSave");
+  const originalLabel = saveBtn.textContent;
+  saveBtn.disabled = true;
+
+  const onProgress = (idx, total) => {
+    saveBtn.textContent = makeSearchable
+      ? `Analyse OCR page ${idx + 1}/${total}...`
+      : `Préparation page ${idx + 1}/${total}...`;
+  };
+
+  try {
+    let doc;
+    if (!targetMB) {
+      doc = await buildPdfDoc({ quality: 0.92, scale: 1, searchable: makeSearchable, onProgress });
+    } else {
+      // Recherche la combinaison qualité/échelle la plus haute qui tient sous
+      // la taille visée. L'OCR (si activé) n'est calculé qu'une fois grâce
+      // au cache par page (ensureOcrForPage) : ces essais successifs ne le
+      // refont pas à chaque tentative, seule la ré-encodage image est refait.
+      const targetBytes = targetMB * 1024 * 1024;
+      const qualitySteps = [0.9, 0.75, 0.6, 0.45, 0.3, 0.18, 0.1];
+      const scaleSteps = [1, 0.85, 0.7, 0.55, 0.4];
+      let bestDoc = null, bestBytes = Infinity, reached = false;
+
+      outer:
+      for (const scale of scaleSteps) {
+        for (const quality of qualitySteps) {
+          saveBtn.textContent = `Compression (échelle ${Math.round(scale * 100)}%, qualité ${Math.round(quality * 100)}%)...`;
+          const candidate = await buildPdfDoc({ quality, scale, searchable: makeSearchable, onProgress: () => {} });
+          const bytes = candidate.output("arraybuffer").byteLength;
+          if (bytes < bestBytes) { bestDoc = candidate; bestBytes = bytes; }
+          if (bytes <= targetBytes) { reached = true; break outer; }
+        }
+      }
+      doc = bestDoc;
+      if (!reached) {
+        alert(
+          `Impossible de descendre sous ${targetMB} Mo sans dégrader excessivement la qualité.\n` +
+          `Le fichier le plus compressé obtenu fait environ ${(bestBytes / (1024 * 1024)).toFixed(2)} Mo — c'est celui qui va être enregistré.`
+        );
+      }
+    }
+    doc.save("document_modifie.pdf");
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalLabel;
+  }
+}
+
+// ------------------------------------------------------------ recto-verso --
+async function runDuplexMerge() {
+  const rectoFiles = el("duplexRecto").files;
+  const versoFiles = el("duplexVerso").files;
+  const status = el("duplexStatus");
+
+  if (!rectoFiles.length || !versoFiles.length) {
+    status.textContent = "Choisis un fichier de rectos ET un fichier de versos.";
+    status.style.color = "#fca5a5";
+    return;
+  }
+
+  const applyBtn = el("duplexApply");
+  applyBtn.disabled = true;
+  status.style.color = "var(--muted)";
+  try {
+    status.textContent = "Lecture des rectos...";
+    const rectoPages = await filesToPages(rectoFiles);
+    status.textContent = "Lecture des versos...";
+    const versoPages = await filesToPages(versoFiles);
+
+    if (rectoPages.length !== versoPages.length) {
+      status.textContent = `Attention : ${rectoPages.length} recto(s) mais ${versoPages.length} verso(s) — ` +
+        `le fichier ne peut être fusionné que si les deux comptes sont égaux.`;
+      status.style.color = "#fca5a5";
+      applyBtn.disabled = false;
+      return;
+    }
+
+    const reversed = el("duplexReversed").checked;
+    const n = rectoPages.length;
+    const merged = [];
+    for (let i = 0; i < n; i++) {
+      merged.push(rectoPages[i]);
+      merged.push(reversed ? versoPages[n - 1 - i] : versoPages[i]);
+    }
+
+    status.textContent = `Fusion de ${merged.length} pages, export en cours...`;
+    const savedPages = state.pages;
+    state.pages = merged; // réutilise buildPdfDoc, qui lit state.pages
+    const doc = await buildPdfDoc({ quality: 0.92, scale: 1, searchable: false, onProgress: () => {} });
+    state.pages = savedPages;
+
+    doc.save("document_recto_verso.pdf");
+    status.textContent = "Terminé — le fichier a été téléchargé.";
+    status.style.color = "#86efac";
+  } catch (err) {
+    status.textContent = "Erreur : " + err.message;
+    status.style.color = "#fca5a5";
+  } finally {
+    applyBtn.disabled = false;
+  }
+}
+
+// -------------------------------------------------------------- brouillon --
+// Sauvegarde automatique en local (IndexedDB — les pages peuvent peser plusieurs
+// Mo, trop pour localStorage) pour pouvoir reprendre après une fermeture
+// accidentelle de l'onglet. Rien de tout ça ne quitte jamais le navigateur.
+const DRAFT_DB_NAME = "pdfclair-draft";
+const DRAFT_STORE = "draft";
+let draftDbPromise = null;
+
+function getDraftDb() {
+  if (!draftDbPromise) {
+    draftDbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DRAFT_DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(DRAFT_STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  return draftDbPromise;
+}
+
+async function saveDraftNow() {
+  if (!state.pages.length) return;
+  try {
+    const db = await getDraftDb();
+    const pages = await Promise.all(state.pages.map(p => new Promise((resolve) => {
+      p.canvas.toBlob(blob => resolve({ blob, w: p.canvas.width, h: p.canvas.height }), "image/jpeg", 0.85);
+    })));
+    const record = { pages, pageIndex: state.pageIndex, savedAt: Date.now() };
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DRAFT_STORE, "readwrite");
+      tx.objectStore(DRAFT_STORE).put(record, "current");
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("Sauvegarde automatique impossible :", err);
+  }
+}
+
+let autosaveTimer = null;
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(saveDraftNow, 1500);
+}
+
+async function loadDraftRecord() {
+  try {
+    const db = await getDraftDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(DRAFT_STORE, "readonly");
+      const req = tx.objectStore(DRAFT_STORE).get("current");
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn("Lecture du brouillon impossible :", err);
+    return null;
+  }
+}
+
+async function clearDraft() {
+  try {
+    const db = await getDraftDb();
+    const tx = db.transaction(DRAFT_STORE, "readwrite");
+    tx.objectStore(DRAFT_STORE).delete("current");
+  } catch (err) {
+    // pas grave, ce n'est qu'un brouillon
+  }
+}
+
+async function blobToPage(item) {
+  const bitmap = await createImageBitmap(item.blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = item.w;
+  canvas.height = item.h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0, item.w, item.h);
+  return { canvas, ctx };
+}
+
+async function restoreDraft(record) {
+  state.pages = await Promise.all(record.pages.map(blobToPage));
+  resetEditingState();
+  state.pageIndex = Math.min(record.pageIndex || 0, state.pages.length - 1);
+  enableMainUi();
+  renderCurrentPage();
+}
+
+// Au chargement de la page : propose de reprendre un brouillon laissé en cours.
+(async function checkForDraft() {
+  const record = await loadDraftRecord();
+  if (!record || !record.pages || !record.pages.length) return;
+  const when = new Date(record.savedAt);
+  const timeStr = when.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const plural = record.pages.length > 1 ? "s" : "";
+  el("draftBannerText").textContent =
+    `Un brouillon non enregistré a été trouvé (${record.pages.length} page${plural}, modifié le ${timeStr}).`;
+  el("draftBanner").style.display = "flex";
+  el("draftResume").onclick = async () => {
+    el("draftBanner").style.display = "none";
+    await restoreDraft(record);
+  };
+  el("draftDiscard").onclick = async () => {
+    el("draftBanner").style.display = "none";
+    await clearDraft();
+  };
+})();
+</script>
+
+</body>
+</html>
