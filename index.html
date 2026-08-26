@@ -8,6 +8,8 @@
 <link rel="canonical" href="https://pdfclair.com/">
 <meta name="robots" content="index, follow">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta name="theme-color" content="#14151b">
+<link rel="apple-touch-icon" href="favicon.svg">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="PDF Clair">
@@ -34,6 +36,46 @@
     "price": "0",
     "priceCurrency": "EUR"
   }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Le traitement est-il vraiment 100 % local ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Oui. La lecture du PDF, l'OCR et l'export tournent avec du code qui s'exécute uniquement dans le navigateur. Rien n'est envoyé sur un serveur, même en arrière-plan."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Est-ce que ça marche hors ligne ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Une fois la page chargée, oui — tout le nécessaire est déjà en mémoire dans l'onglet. La page reste utilisable même sans connexion après ce premier chargement."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Y a-t-il une limite de pages ou de fichiers ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Aucune. L'outil tourne sur la puissance de l'ordinateur de l'utilisateur, pas sur un quota serveur."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Dans quelles langues fonctionne l'OCR ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Le français et l'anglais sont pris en charge nativement pour la détection de texte dans les scans."
+      }
+    }
+  ]
 }
 </script>
 
@@ -565,7 +607,7 @@
       </details>
       <details class="faq-item">
         <summary>Est-ce que ça marche hors ligne ?</summary>
-        <p>Une fois la page chargée, oui — tout le nécessaire est déjà en mémoire dans l'onglet. Recharge simplement la page si tu changes de réseau après une longue pause.</p>
+        <p>Oui, une fois que tu as ouvert l'outil une première fois avec une connexion. La page et les bibliothèques nécessaires restent en cache, tu peux donc y revenir même sans réseau.</p>
       </details>
       <details class="faq-item">
         <summary>Y a-t-il une limite de pages ou de fichiers ?</summary>
@@ -607,6 +649,12 @@
 </footer>
 
 <script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+
   if ("IntersectionObserver" in window) {
     const io = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {

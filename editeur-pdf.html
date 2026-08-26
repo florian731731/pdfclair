@@ -8,25 +8,31 @@
 <link rel="canonical" href="https://pdfclair.com/editeur-pdf.html">
 <meta name="robots" content="index, follow">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
+<meta name="theme-color" content="#14151b">
+<link rel="apple-touch-icon" href="favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root {
-    --bg: #1e2126;
-    --panel: #2a2e35;
-    --border: #3c414a;
-    --text: #e6e8eb;
-    --muted: #9aa1ab;
-    --accent: #3b82f6;
-    --accent-hover: #2563eb;
-    --danger: #ef4444;
-    --ok: #22c55e;
+    --bg: #14151b;
+    --panel: #1b1d25;
+    --panel-2: #21232c;
+    --border: #33363f;
+    --text: #edeef0;
+    --muted: #93969f;
+    --accent: #b7402f;
+    --accent-hover: #d15a44;
+    --danger: #c0594a;
+    --ok: #7fae6e;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: var(--bg);
     color: var(--text);
     height: 100vh;
@@ -44,27 +50,39 @@
   }
   header h1 {
     font-size: 15px;
-    font-weight: 600;
+    font-weight: 700;
     margin: 0 12px 0 0;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    letter-spacing: -0.01em;
   }
+  header h1 svg { flex: none; color: var(--accent-hover); }
   button {
-    background: #3a3f47;
+    background: #2a2d36;
     color: var(--text);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: 7px;
     padding: 7px 12px;
     font-size: 13px;
+    font-family: inherit;
     cursor: pointer;
+    transition: background .15s ease, border-color .15s ease, transform .1s ease;
   }
-  button:hover { background: #454b55; }
-  button.primary { background: var(--accent); border-color: var(--accent); }
-  button.primary:hover { background: var(--accent-hover); }
+  button:hover { background: #33363f; border-color: #454955; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff8f4; font-weight: 600; }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button:active:not(:disabled) { transform: scale(0.97); }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 2px;
+  }
   input[type="file"] { display: none; }
   .sep { width: 1px; background: var(--border); align-self: stretch; margin: 0 4px; }
   .spacer { flex: 1; }
-  #pageInfo { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  #pageInfo { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
   main {
     flex: 1;
     overflow: auto;
@@ -91,10 +109,11 @@
     line-height: 1.6;
   }
   footer {
-    padding: 6px 14px;
+    padding: 7px 14px;
     background: var(--panel);
     border-top: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 11.5px;
+    font-family: "IBM Plex Mono", monospace;
     color: var(--muted);
   }
   /* Modal */
@@ -115,7 +134,7 @@
     width: 380px;
     max-width: 90vw;
   }
-  #modal h2 { font-size: 15px; margin: 0 0 14px 0; }
+  #modal h2 { font-size: 15px; margin: 0 0 14px 0; font-weight: 700; }
   #modal label {
     display: block;
     font-size: 12px;
@@ -125,11 +144,12 @@
   #modal input[type="text"], #modal input[type="number"], #modal select {
     width: 100%;
     padding: 7px 8px;
-    background: #1e2126;
+    background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
     border-radius: 6px;
     font-size: 13px;
+    font-family: inherit;
   }
   .colorRow { display: flex; align-items: center; gap: 8px; }
   .colorRow input[type="color"] { width: 40px; height: 30px; padding: 0; border: none; background: none; }
@@ -148,16 +168,16 @@
     z-index: 10;
     max-width: calc(100% - 40px);
   }
-  #zoomLabel { font-size: 12px; color: var(--muted); width: 42px; text-align: center; display: inline-block; }
+  #zoomLabel { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); width: 42px; text-align: center; display: inline-block; }
   #draftBanner {
     display: none;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
-    background: #3b2f13;
-    border-bottom: 1px solid #7c5a12;
+    background: #332616;
+    border-bottom: 1px solid #6b4a1f;
     font-size: 13px;
-    color: #fde68a;
+    color: #f0cf9a;
   }
   main { flex: 1; overflow: hidden; display: flex; align-items: stretch; justify-content: flex-start; padding: 0; background: #14161a; }
   #thumbSidebar {
@@ -190,7 +210,13 @@
 <body>
 
 <header>
-  <h1>🖊 PDF Clair</h1>
+  <h1>
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+      <path d="M4 20 L15 9 a2 2 0 0 0 -3 -3 L1 17 v3 z" />
+      <path d="M12.5 5.5 L18.5 11.5" />
+    </svg>
+    PDF Clair
+  </h1>
   <button id="btnOpen" class="primary">Ouvrir un PDF...</button>
   <input type="file" id="fileInput" accept="application/pdf">
   <button id="btnSave" disabled>Enregistrer le PDF</button>
@@ -1186,7 +1212,7 @@ async function runDuplexMerge() {
 
   if (!rectoFiles.length || !versoFiles.length) {
     status.textContent = "Choisis un fichier de rectos ET un fichier de versos.";
-    status.style.color = "#fca5a5";
+    status.style.color = "#e2a190";
     return;
   }
 
@@ -1202,7 +1228,7 @@ async function runDuplexMerge() {
     if (rectoPages.length !== versoPages.length) {
       status.textContent = `Attention : ${rectoPages.length} recto(s) mais ${versoPages.length} verso(s) — ` +
         `le fichier ne peut être fusionné que si les deux comptes sont égaux.`;
-      status.style.color = "#fca5a5";
+      status.style.color = "#e2a190";
       applyBtn.disabled = false;
       return;
     }
@@ -1223,10 +1249,10 @@ async function runDuplexMerge() {
 
     doc.save("document_recto_verso.pdf");
     status.textContent = "Terminé — le fichier a été téléchargé.";
-    status.style.color = "#86efac";
+    status.style.color = "#a8cf98";
   } catch (err) {
     status.textContent = "Erreur : " + err.message;
-    status.style.color = "#fca5a5";
+    status.style.color = "#e2a190";
   } finally {
     applyBtn.disabled = false;
   }
@@ -1339,6 +1365,12 @@ async function restoreDraft(record) {
     await clearDraft();
   };
 })();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
 </script>
 
 </body>
