@@ -399,6 +399,8 @@ const state = {
   pendingBox: null,   // rectangle en attente de confirmation dans la modale
   copyStep: "source",  // "source" | "target" (mode copier-coller)
   clipboard: null,     // { canvas, w, h } zone copiée
+  pastePreview: null,  // {x,y} centre du collage en attente de validation (ajustable)
+  pastePreviewDrag: null, // {startX, startY, origX, origY} pendant un ajustement au glisser
   zoom: 1,             // niveau de zoom d'affichage (1 = ajusté à la fenêtre)
   editingBox: null,    // {x0,y0,x1,y1} rectangle en cours d'ajustement (mode "free")
   boxDrag: null,       // {type:"move"|"resize", handle?, startX, startY, orig} pendant un déplacement/redimensionnement
@@ -422,18 +424,41 @@ el("btnZoomOut").addEventListener("click", () => setZoom(state.zoom - ZOOM_STEP)
 el("btnZoomIn").addEventListener("click", () => setZoom(state.zoom + ZOOM_STEP));
 el("btnRotatePage").addEventListener("click", () => rotatePage(state.pageIndex, 1));
 el("boxConfirm").addEventListener("click", () => {
+  if (state.pastePreview) {
+    commitPastePreview();
+    return;
+  }
   if (!state.editingBox) return;
   const box = state.editingBox;
   state.editingBox = null;
   el("boxActions").style.display = "none";
   openModalForBox(box, "");
 });
-el("boxCancel").addEventListener("click", cancelEditingBox);
+el("boxCancel").addEventListener("click", () => {
+  if (state.pastePreview) {
+    cancelPastePreview();
+    return;
+  }
+  cancelEditingBox();
+});
 
 // Raccourcis clavier : Ctrl/Cmd+Z pour annuler, flèches gauche/droite pour changer de page
 document.addEventListener("keydown", (evt) => {
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
   if (typing) return;
+
+  const isArrow = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(evt.key);
+  if (isArrow && (state.pastePreview || state.editingBox)) {
+    // Un ajustement (collage ou zone libre) est en cours : les flèches le
+    // déplacent finement au lieu de changer de page.
+    evt.preventDefault();
+    const step = evt.shiftKey ? 10 : 2;
+    const dx = evt.key === "ArrowLeft" ? -step : evt.key === "ArrowRight" ? step : 0;
+    const dy = evt.key === "ArrowUp" ? -step : evt.key === "ArrowDown" ? step : 0;
+    nudgeActive(dx, dy);
+    return;
+  }
+
   if ((evt.ctrlKey || evt.metaKey) && evt.key.toLowerCase() === "z") {
     evt.preventDefault();
     undo();
@@ -443,8 +468,9 @@ document.addEventListener("keydown", (evt) => {
     gotoPage(state.pageIndex + 1);
   } else if (evt.key === "Escape") {
     if (el("modalOverlay").style.display === "flex") closeModal();
+    else if (state.pastePreview) cancelPastePreview();
     else if (state.editingBox) cancelEditingBox();
-  } else if (evt.key === "Enter" && state.editingBox && el("modalOverlay").style.display !== "flex") {
+  } else if (evt.key === "Enter" && (state.editingBox || state.pastePreview) && el("modalOverlay").style.display !== "flex") {
     evt.preventDefault();
     el("boxConfirm").click();
   }
@@ -456,6 +482,9 @@ el("btnModeCopy").addEventListener("click", () => {
     // déjà en mode copier-coller : on repart sur une nouvelle copie
     state.clipboard = null;
     state.copyStep = "source";
+    state.pastePreview = null;
+    state.pastePreviewDrag = null;
+    el("boxActions").style.display = "none";
     clearOverlay();
     updateCopyStatus();
   } else {
@@ -473,6 +502,9 @@ el("duplexCancel").addEventListener("click", () => { el("duplexOverlay").style.d
 el("duplexApply").addEventListener("click", runDuplexMerge);
 
 // ------------------------------------------------------- chargement fichiers --
+// Rend un PDF (ArrayBuffer) en une page-entrée {canvas, ctx} par page, à la
+// résolution de travail. Réutilisé pour l'ouverture initiale, la fusion de
+// fichiers, et le recto-verso.
 async function pdfBufferToPages(buf) {
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const pages = [];
@@ -489,6 +521,8 @@ async function pdfBufferToPages(buf) {
   return pages;
 }
 
+// Charge une image (jpg/png/heic une fois décodée par le navigateur, etc.)
+// comme une unique page-entrée, à sa résolution native.
 async function imageFileToPage(file) {
   const bitmap = await createImageBitmap(file);
   const canvas = document.createElement("canvas");
@@ -499,6 +533,8 @@ async function imageFileToPage(file) {
   return { canvas, ctx };
 }
 
+// Convertit une liste de fichiers (PDF et/ou images, dans l'ordre) en une
+// liste à plat de pages-entrées {canvas, ctx}.
 async function filesToPages(fileList) {
   const pages = [];
   for (const file of Array.from(fileList)) {
@@ -556,14 +592,14 @@ async function onAddFiles(e) {
       resetEditingState();
       enableMainUi();
     }
-    state.pageIndex = state.pages.length - newPages.length;
+    state.pageIndex = state.pages.length - newPages.length; // saute sur la première page ajoutée
     renderCurrentPage();
   } catch (err) {
     alert("Erreur en ajoutant ces fichiers : " + err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = label;
-    e.target.value = "";
+    e.target.value = ""; // permet de rechoisir les mêmes fichiers plus tard
   }
 }
 
@@ -577,6 +613,7 @@ function setZoom(z) {
 
 function applyZoom() {
   if (!state.pages.length) return;
+  // revient d'abord à la taille naturelle (ajustée par le CSS max-width) pour la mesurer
   baseCanvas.style.width = "";
   overlayCanvas.style.width = "";
   baseCanvas.style.maxWidth = "";
@@ -588,6 +625,7 @@ function applyZoom() {
   }
   const naturalWidth = baseCanvas.getBoundingClientRect().width;
   const newWidth = naturalWidth * state.zoom;
+  // le zoom doit pouvoir dépasser la limite CSS "max-width: 90vw" prévue pour l'affichage par défaut
   baseCanvas.style.maxWidth = "none";
   overlayCanvas.style.maxWidth = "none";
   baseCanvas.style.width = newWidth + "px";
@@ -717,6 +755,8 @@ function renderThumbnails() {
 function renderCurrentPage() {
   state.editingBox = null;
   state.boxDrag = null;
+  state.pastePreview = null;
+  state.pastePreviewDrag = null;
   el("boxActions").style.display = "none";
 
   const p = state.pages[state.pageIndex];
@@ -747,6 +787,8 @@ function gotoPage(idx) {
   renderCurrentPage();
 }
 
+// Estime la proportion de pixels "non blancs" d'une page, en échantillonnant
+// pour rester rapide même sur une page haute résolution.
 function pageInkRatio(canvas) {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const w = canvas.width, h = canvas.height;
@@ -765,7 +807,7 @@ function pageInkRatio(canvas) {
 
 function removeBlankPages() {
   if (!state.pages.length) return;
-  const BLANK_THRESHOLD = 0.003;
+  const BLANK_THRESHOLD = 0.003; // 0.3% de pixels non blancs ou moins = page considérée vide
   const blankIndexes = [];
   state.pages.forEach((p, idx) => {
     if (pageInkRatio(p.canvas) <= BLANK_THRESHOLD) blankIndexes.push(idx);
@@ -788,7 +830,7 @@ function removeBlankPages() {
   if (!confirmed) return;
 
   state.pages = state.pages.filter((_, idx) => !blankIndexes.includes(idx));
-  state.undoStack = [];
+  state.undoStack = []; // suppression de pages = on ne peut plus se fier aux snapshots par page
   state.pageIndex = Math.min(state.pageIndex, state.pages.length - 1);
   state.ocrWords = [];
   renderCurrentPage();
@@ -797,6 +839,8 @@ function removeBlankPages() {
 function setMode(mode) {
   state.editingBox = null;
   state.boxDrag = null;
+  state.pastePreview = null;
+  state.pastePreviewDrag = null;
   el("boxActions").style.display = "none";
   state.mode = mode;
   el("btnModeFree").style.borderColor = mode === "free" ? "var(--accent)" : "var(--border)";
@@ -817,13 +861,14 @@ function updateCopyStatus() {
   status.style.display = "block";
   status.textContent = state.copyStep === "source"
     ? "Dessine un rectangle autour de la zone à copier (ex : une croix déjà cochée)."
-    : "Zone copiée ✓ — clique à l'endroit où la coller (tu peux coller plusieurs fois). Reclique sur \"Copier-coller\" pour copier une autre zone.";
+    : "Zone copiée ✓ — tape à l'endroit où la coller, ajuste sa position (glisser ou flèches du clavier), puis valide avec ✓ ou la touche Entrée. Tu peux coller plusieurs fois.";
 }
 
 function clearOverlay() {
   overlayCanvas.getContext("2d").clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 }
 
+// ---------------------------------------------------------------- souris --
 function canvasCoords(evt) {
   const rect = overlayCanvas.getBoundingClientRect();
   const scaleX = overlayCanvas.width / rect.width;
@@ -838,7 +883,11 @@ function isDragSelectMode() {
   return state.mode === "free" || (state.mode === "copy" && state.copyStep === "source");
 }
 
+// ------------------------------------------------ ajuster une sélection --
+// Après un premier tracé en mode "Zone libre", le rectangle reste modifiable
+// (déplacement, redimensionnement par les coins) avant de valider la modale.
 function getDisplayScale() {
+  // pixels "canvas" (résolution réelle) par pixel CSS affiché — dépend du zoom courant.
   const rect = overlayCanvas.getBoundingClientRect();
   return rect.width ? overlayCanvas.width / rect.width : 1;
 }
@@ -853,7 +902,7 @@ function boxHandles(box) {
 }
 
 function hitTestBox(x, y, box) {
-  const hs = 9 * getDisplayScale() * 1.4;
+  const hs = 9 * getDisplayScale() * 1.4; // zone de saisie un peu plus large que la poignée dessinée
   for (const [handle, pos] of Object.entries(boxHandles(box))) {
     if (Math.abs(x - pos.x) <= hs && Math.abs(y - pos.y) <= hs) return { type: "resize", handle };
   }
@@ -906,7 +955,30 @@ overlayCanvas.addEventListener("pointerdown", (evt) => {
       evt.preventDefault();
       return;
     }
-    cancelEditingBox();
+    cancelEditingBox(); // clic en dehors du rectangle : on l'abandonne et on repart sur une nouvelle sélection
+  }
+
+  if (state.mode === "copy" && state.copyStep === "target" && state.clipboard) {
+    const clip = state.clipboard;
+    if (state.pastePreview) {
+      const px = state.pastePreview.x - clip.w / 2, py = state.pastePreview.y - clip.h / 2;
+      if (x >= px && x <= px + clip.w && y >= py && y <= py + clip.h) {
+        // à l'intérieur de l'aperçu déjà posé : on le fait glisser pour l'ajuster
+        state.pastePreviewDrag = { startX: x, startY: y, origX: state.pastePreview.x, origY: state.pastePreview.y };
+        overlayCanvas.setPointerCapture(evt.pointerId);
+        evt.preventDefault();
+        return;
+      }
+    }
+    // premier placement (ou nouveau placement ailleurs) : pose un aperçu, ajustable
+    // immédiatement dans le même geste avant même de relâcher le doigt/la souris.
+    state.pastePreview = { x, y };
+    clampPastePreview();
+    state.pastePreviewDrag = { startX: x, startY: y, origX: state.pastePreview.x, origY: state.pastePreview.y };
+    overlayCanvas.setPointerCapture(evt.pointerId);
+    drawPastePreview();
+    evt.preventDefault();
+    return;
   }
 
   if (!isDragSelectMode()) return;
@@ -915,7 +987,20 @@ overlayCanvas.addEventListener("pointerdown", (evt) => {
   evt.preventDefault();
 });
 
+// pointermove/pointerup sont capturés par le canevas lui-même (setPointerCapture
+// ci-dessus) : ça marche aussi bien à la souris qu'au doigt, et continue à suivre
+// le pointeur même s'il sort brièvement des limites du canevas pendant le geste.
 overlayCanvas.addEventListener("pointermove", (evt) => {
+  if (state.pastePreviewDrag) {
+    const { x, y } = canvasCoords(evt);
+    const d = state.pastePreviewDrag;
+    state.pastePreview.x = d.origX + (x - d.startX);
+    state.pastePreview.y = d.origY + (y - d.startY);
+    clampPastePreview();
+    drawPastePreview();
+    return;
+  }
+
   if (state.boxDrag) {
     const { x, y } = canvasCoords(evt);
     const d = state.boxDrag;
@@ -936,7 +1021,7 @@ overlayCanvas.addEventListener("pointermove", (evt) => {
       const cx = Math.max(0, Math.min(overlayCanvas.width, x));
       const cy = Math.max(0, Math.min(overlayCanvas.height, y));
       box = { x0: Math.min(opp.x, cx), y0: Math.min(opp.y, cy), x1: Math.max(opp.x, cx), y1: Math.max(opp.y, cy) };
-      if (box.x1 - box.x0 < 8 || box.y1 - box.y0 < 8) return;
+      if (box.x1 - box.x0 < 8 || box.y1 - box.y0 < 8) return; // évite l'inversion/collapse du rectangle
     }
     state.editingBox = box;
     drawEditingBox();
@@ -954,6 +1039,7 @@ overlayCanvas.addEventListener("pointermove", (evt) => {
 });
 
 overlayCanvas.addEventListener("pointerup", (evt) => {
+  if (state.pastePreviewDrag) { state.pastePreviewDrag = null; return; }
   if (state.boxDrag) { state.boxDrag = null; return; }
   if (!state.selecting || !isDragSelectMode()) return;
   const { x, y } = canvasCoords(evt);
@@ -966,6 +1052,8 @@ overlayCanvas.addEventListener("pointerup", (evt) => {
   if (box.x1 - box.x0 < 4 || box.y1 - box.y0 < 4) { clearOverlay(); return; }
 
   if (state.mode === "free") {
+    // Le rectangle reste ajustable (déplacer / redimensionner) avant de valider,
+    // au lieu d'ouvrir directement la modale.
     state.editingBox = box;
     drawEditingBox();
   } else {
@@ -981,12 +1069,10 @@ overlayCanvas.addEventListener("click", (evt) => {
       const pad = 3;
       openModalForBox({ x0: hit.x0 - pad, y0: hit.y0 - pad, x1: hit.x1 + pad, y1: hit.y1 + pad }, hit.text);
     }
-  } else if (state.mode === "copy" && state.copyStep === "target") {
-    const { x, y } = canvasCoords(evt);
-    pasteClipboardAt(x, y);
   }
 });
 
+// ------------------------------------------------------------ copier-coller --
 function captureClipboard(box) {
   const srcCanvas = state.pages[state.pageIndex].canvas;
   const w = Math.max(1, Math.round(box.x1 - box.x0));
@@ -998,25 +1084,86 @@ function captureClipboard(box) {
 
   state.clipboard = { canvas: clip, w, h };
   state.copyStep = "target";
-  state.suppressNextClick = true;
   clearOverlay();
   updateCopyStatus();
 }
 
-function pasteClipboardAt(cx, cy) {
-  if (state.suppressNextClick) { state.suppressNextClick = false; return; }
+// Le collage n'est jamais appliqué immédiatement : il reste "en aperçu"
+// (déplaçable à la souris/au doigt ou au clavier) jusqu'à validation explicite,
+// pour pouvoir le recentrer précisément avant de l'appliquer définitivement.
+function clampPastePreview() {
+  if (!state.pastePreview || !state.clipboard) return;
   const clip = state.clipboard;
-  if (!clip) return;
+  const halfW = clip.w / 2, halfH = clip.h / 2;
+  state.pastePreview.x = Math.max(halfW, Math.min(overlayCanvas.width - halfW, state.pastePreview.x));
+  state.pastePreview.y = Math.max(halfH, Math.min(overlayCanvas.height - halfH, state.pastePreview.y));
+}
+
+function drawPastePreview() {
+  clearOverlay();
+  const pv = state.pastePreview;
+  const clip = state.clipboard;
+  if (!pv || !clip) return;
+  const x = pv.x - clip.w / 2, y = pv.y - clip.h / 2;
+  const ctx = overlayCanvas.getContext("2d");
+  ctx.save();
+  ctx.globalAlpha = 0.92;
+  ctx.drawImage(clip.canvas, x, y);
+  ctx.restore();
+  ctx.strokeStyle = "#00c853";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(x, y, clip.w, clip.h);
+  ctx.setLineDash([]);
+  positionBoxActions({ x0: x, y0: y, x1: x + clip.w, y1: y + clip.h });
+}
+
+function commitPastePreview() {
+  const pv = state.pastePreview;
+  const clip = state.clipboard;
+  if (!pv || !clip) return;
   pushUndo();
   const ctx = state.pages[state.pageIndex].ctx;
-  ctx.drawImage(clip.canvas, cx - clip.w / 2, cy - clip.h / 2);
+  ctx.drawImage(clip.canvas, pv.x - clip.w / 2, pv.y - clip.h / 2);
   invalidateOcrCache(state.pageIndex);
+  state.pastePreview = null;
+  state.pastePreviewDrag = null;
   renderCurrentPage();
   state.mode = "copy";
   state.copyStep = "target";
   updateCopyStatus();
 }
 
+function cancelPastePreview() {
+  state.pastePreview = null;
+  state.pastePreviewDrag = null;
+  el("boxActions").style.display = "none";
+  clearOverlay();
+}
+
+// Déplace l'aperçu de collage (ou la zone libre en cours d'ajustement) de
+// quelques pixels — utilisé par les flèches du clavier pour un réglage fin.
+function nudgeActive(dx, dy) {
+  if (state.pastePreview) {
+    state.pastePreview.x += dx;
+    state.pastePreview.y += dy;
+    clampPastePreview();
+    drawPastePreview();
+    return true;
+  }
+  if (state.editingBox) {
+    const w = state.editingBox.x1 - state.editingBox.x0;
+    const h = state.editingBox.y1 - state.editingBox.y0;
+    const nx0 = Math.max(0, Math.min(overlayCanvas.width - w, state.editingBox.x0 + dx));
+    const ny0 = Math.max(0, Math.min(overlayCanvas.height - h, state.editingBox.y0 + dy));
+    state.editingBox = { x0: nx0, y0: ny0, x1: nx0 + w, y1: ny0 + h };
+    drawEditingBox();
+    return true;
+  }
+  return false;
+}
+
+// -------------------------------------------------------------------- OCR --
 let tesseractWorker = null;
 
 async function getTesseractWorker() {
@@ -1026,6 +1173,9 @@ async function getTesseractWorker() {
   return tesseractWorker;
 }
 
+// Analyse OCR d'une page, avec mise en cache (utilisé à la fois par le mode
+// "cliquer un mot" et par l'export en texte cherchable, pour ne jamais
+// relancer deux fois l'analyse d'une même page inchangée).
 async function ensureOcrForPage(idx) {
   const p = state.pages[idx];
   if (p.ocrCache) return p.ocrCache;
@@ -1038,6 +1188,7 @@ async function ensureOcrForPage(idx) {
   return words;
 }
 
+// invalide le cache OCR d'une page (après une modification de son contenu)
 function invalidateOcrCache(idx) {
   if (state.pages[idx]) state.pages[idx].ocrCache = null;
 }
@@ -1064,6 +1215,7 @@ function drawOcrOverlay() {
   state.ocrWords.forEach(w => ctx.strokeRect(w.x0, w.y0, w.x1 - w.x0, w.y1 - w.y0));
 }
 
+// ---------------------------------------------------------------- modale --
 function sampleBackground(ctx, box) {
   const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
   const x1 = Math.min(ctx.canvas.width, Math.ceil(box.x1)), y1 = Math.min(ctx.canvas.height, Math.ceil(box.y1));
@@ -1160,11 +1312,15 @@ function applyModal() {
 
   el("modalOverlay").style.display = "none";
   state.pendingBox = null;
-  state.ocrWords = [];
+  state.ocrWords = []; // les positions ne sont plus valides après édition
   invalidateOcrCache(state.pageIndex);
   renderCurrentPage();
 }
 
+// ----------------------------------------------------------------- undo --
+// Deux types d'entrées dans la pile : "image" (une correction de zone —
+// mêmes dimensions de page, restaurée par pixels) et "canvas" (une rotation —
+// les dimensions changent, on restaure le canevas entier).
 function pushUndo() {
   const p = state.pages[state.pageIndex];
   const snap = p.ctx.getImageData(0, 0, p.canvas.width, p.canvas.height);
@@ -1192,7 +1348,7 @@ function undo() {
   const last = state.undoStack.pop();
   if (!last) return;
   const p = state.pages[last.pageIndex];
-  if (!p) { updateUndoBtn(); return; }
+  if (!p) { updateUndoBtn(); return; } // la page a pu être supprimée depuis
   if (last.type === "canvas") {
     p.canvas = last.canvas;
     p.ctx = last.canvas.getContext("2d", { willReadFrequently: true });
@@ -1205,6 +1361,8 @@ function undo() {
   renderCurrentPage();
 }
 
+// --------------------------------------------------------------- rotation --
+// direction : 1 = 90° horaire, -1 = 90° anti-horaire.
 function rotatePage(idx, direction) {
   if (idx < 0 || idx >= state.pages.length) return;
   const p = state.pages[idx];
@@ -1239,6 +1397,7 @@ function rotatePage(idx, direction) {
   }
 }
 
+// ---------------------------------------------------------- suppression --
 function deletePage(idx) {
   if (idx < 0 || idx >= state.pages.length) return;
 
@@ -1267,8 +1426,16 @@ function deletePage(idx) {
   renderCurrentPage();
 }
 
+// ----------------------------------------------------------------- save --
+// jsPDF force le mode "portrait" par défaut et intervertit largeur/hauteur si
+// on ne précise pas l'orientation : sur une page plus large que haute
+// (paysage), ça déformait l'image. On l'indique donc toujours explicitement.
 const orientOfWH = (w, h) => (w > h ? "l" : "p");
 
+// Construit un document jsPDF complet à partir de state.pages, avec un
+// facteur de qualité JPEG et un facteur d'échelle donnés (utilisé pour la
+// recherche d'une taille de fichier cible). onProgress(idx, total) est
+// appelé avant chaque page pour permettre d'afficher une progression.
 async function buildPdfDoc({ quality, scale, searchable, onProgress }) {
   const { jsPDF } = window.jspdf;
   const dims = state.pages.map(p => ({
@@ -1298,6 +1465,9 @@ async function buildPdfDoc({ quality, scale, searchable, onProgress }) {
       words.forEach(word => {
         const wh = (word.y1 - word.y0) * scale;
         if (wh < 4 || !word.text) return;
+        // Couche de texte invisible calée sur la position détectée par l'OCR,
+        // superposée à l'image du scan : le PDF reste visuellement identique
+        // mais devient sélectionnable / cherchable / copiable.
         doc.setFontSize(wh);
         const baseline = word.y0 * scale + wh * 0.85;
         doc.text(word.text, word.x0 * scale, baseline, { renderingMode: "invisible" });
@@ -1327,6 +1497,10 @@ async function savePdf() {
     if (!targetMB) {
       doc = await buildPdfDoc({ quality: 0.92, scale: 1, searchable: makeSearchable, onProgress });
     } else {
+      // Recherche la combinaison qualité/échelle la plus haute qui tient sous
+      // la taille visée. L'OCR (si activé) n'est calculé qu'une fois grâce
+      // au cache par page (ensureOcrForPage) : ces essais successifs ne le
+      // refont pas à chaque tentative, seule la ré-encodage image est refait.
       const targetBytes = targetMB * 1024 * 1024;
       const qualitySteps = [0.9, 0.75, 0.6, 0.45, 0.3, 0.18, 0.1];
       const scaleSteps = [1, 0.85, 0.7, 0.55, 0.4];
@@ -1357,6 +1531,7 @@ async function savePdf() {
   }
 }
 
+// ------------------------------------------------------------ recto-verso --
 async function runDuplexMerge() {
   const rectoFiles = el("duplexRecto").files;
   const versoFiles = el("duplexVerso").files;
@@ -1395,7 +1570,7 @@ async function runDuplexMerge() {
 
     status.textContent = `Fusion de ${merged.length} pages, export en cours...`;
     const savedPages = state.pages;
-    state.pages = merged;
+    state.pages = merged; // réutilise buildPdfDoc, qui lit state.pages
     const doc = await buildPdfDoc({ quality: 0.92, scale: 1, searchable: false, onProgress: () => {} });
     state.pages = savedPages;
 
@@ -1410,6 +1585,10 @@ async function runDuplexMerge() {
   }
 }
 
+// -------------------------------------------------------------- brouillon --
+// Sauvegarde automatique en local (IndexedDB — les pages peuvent peser plusieurs
+// Mo, trop pour localStorage) pour pouvoir reprendre après une fermeture
+// accidentelle de l'onglet. Rien de tout ça ne quitte jamais le navigateur.
 const DRAFT_DB_NAME = "pdfclair-draft";
 const DRAFT_STORE = "draft";
 let draftDbPromise = null;
@@ -1471,7 +1650,9 @@ async function clearDraft() {
     const db = await getDraftDb();
     const tx = db.transaction(DRAFT_STORE, "readwrite");
     tx.objectStore(DRAFT_STORE).delete("current");
-  } catch (err) {}
+  } catch (err) {
+    // pas grave, ce n'est qu'un brouillon
+  }
 }
 
 async function blobToPage(item) {
@@ -1492,6 +1673,7 @@ async function restoreDraft(record) {
   renderCurrentPage();
 }
 
+// Au chargement de la page : propose de reprendre un brouillon laissé en cours.
 (async function checkForDraft() {
   const record = await loadDraftRecord();
   if (!record || !record.pages || !record.pages.length) return;
