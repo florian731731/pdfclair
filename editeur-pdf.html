@@ -100,7 +100,7 @@
   }
   #stage canvas { display: block; max-width: 90vw; }
   #baseCanvas { position: relative; }
-  #overlayCanvas { position: absolute; top: 0; left: 0; cursor: crosshair; }
+  #overlayCanvas { position: absolute; top: 0; left: 0; cursor: crosshair; touch-action: none; }
   #placeholder {
     color: var(--muted);
     font-size: 15px;
@@ -204,7 +204,7 @@
   .thumbItem.active canvas { border-color: var(--accent); }
   .thumbLabel { font-size: 11px; color: var(--muted); margin-top: 3px; }
   .thumbControls {
-    display: flex; justify-content: center; gap: 3px; margin-top: 5px;
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 3px; margin-top: 5px;
     opacity: 0; transition: opacity .15s ease;
   }
   .thumbItem:hover .thumbControls, .thumbItem:focus-within .thumbControls { opacity: 1; }
@@ -212,6 +212,12 @@
     padding: 2px 5px; font-size: 11px; line-height: 1.4; border-radius: 5px;
   }
   .thumbControls button.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+  /* Écrans tactiles : pas de survol possible, donc les contrôles restent visibles
+     en permanence, avec des cibles de doigt plus confortables. */
+  @media (hover: none) {
+    .thumbControls { opacity: 1; }
+    .thumbControls button { padding: 6px 8px; font-size: 13px; }
+  }
   .mainCenter { flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 24px; }
   #boxActions { display: none; position: absolute; z-index: 20; gap: 6px; }
   #boxActions button { padding: 5px 10px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
@@ -285,8 +291,9 @@
       passe en mode OCR pour cliquer directement sur un mot détecté,
       ou en mode "Copier-coller" pour dupliquer une croix/coche déjà présente ailleurs.
       <br><br>
-      Depuis les miniatures à gauche : fais glisser une page pour la réordonner,
-      ou survole-la pour la pivoter (⟲/⟳) ou la supprimer (✕).
+      Depuis les miniatures à gauche : fais glisser une page pour la réordonner
+      (ou utilise les flèches ▲▼ au doigt), survole-la ou tape dessus pour la
+      pivoter (⟲/⟳) ou la supprimer (✕).
     </div>
     <div id="stage" style="display:none;">
       <div id="ocrStatus">Analyse OCR en cours...</div>
@@ -589,6 +596,20 @@ function applyZoom() {
   if (state.editingBox) drawEditingBox();
 }
 
+// ---------------------------------------------------------- réorganisation --
+// Alternative au glisser-déposer (qui ne fonctionne pas sur écran tactile) :
+// déplace une page d'un cran, en conservant la page affichée synchronisée.
+function movePage(idx, delta) {
+  const target = idx + delta;
+  if (target < 0 || target >= state.pages.length) return;
+  const activePageRef = state.pages[state.pageIndex];
+  const [moved] = state.pages.splice(idx, 1);
+  state.pages.splice(target, 0, moved);
+  state.pageIndex = state.pages.indexOf(activePageRef);
+  state.undoStack = [];
+  renderCurrentPage();
+}
+
 // ------------------------------------------------------------ miniatures --
 let dragSrcIndex = null;
 
@@ -617,6 +638,20 @@ function renderThumbnails() {
     const controls = document.createElement("div");
     controls.className = "thumbControls";
 
+    const btnUp = document.createElement("button");
+    btnUp.type = "button";
+    btnUp.title = "Déplacer vers le haut";
+    btnUp.textContent = "▲";
+    btnUp.disabled = idx === 0;
+    btnUp.addEventListener("click", (e) => { e.stopPropagation(); movePage(idx, -1); });
+
+    const btnDown = document.createElement("button");
+    btnDown.type = "button";
+    btnDown.title = "Déplacer vers le bas";
+    btnDown.textContent = "▼";
+    btnDown.disabled = idx === state.pages.length - 1;
+    btnDown.addEventListener("click", (e) => { e.stopPropagation(); movePage(idx, 1); });
+
     const btnRotL = document.createElement("button");
     btnRotL.type = "button";
     btnRotL.title = "Pivoter à gauche";
@@ -636,6 +671,8 @@ function renderThumbnails() {
     btnDel.textContent = "✕";
     btnDel.addEventListener("click", (e) => { e.stopPropagation(); deletePage(idx); });
 
+    controls.appendChild(btnUp);
+    controls.appendChild(btnDown);
     controls.appendChild(btnRotL);
     controls.appendChild(btnRotR);
     controls.appendChild(btnDel);
@@ -645,6 +682,7 @@ function renderThumbnails() {
     item.appendChild(controls);
     item.addEventListener("click", () => gotoPage(idx));
 
+    // glisser-déposer pour réordonner les pages
     item.addEventListener("dragstart", (e) => {
       dragSrcIndex = idx;
       e.dataTransfer.effectAllowed = "move";
@@ -663,7 +701,7 @@ function renderThumbnails() {
       const [moved] = state.pages.splice(dragSrcIndex, 1);
       state.pages.splice(idx, 0, moved);
       state.pageIndex = state.pages.indexOf(activePageRef);
-      state.undoStack = [];
+      state.undoStack = []; // les index en pile ne sont plus fiables après réordonnancement
       dragSrcIndex = null;
       renderCurrentPage();
     });
@@ -856,7 +894,7 @@ function cancelEditingBox() {
   if (state.mode === "ocr") drawOcrOverlay();
 }
 
-overlayCanvas.addEventListener("mousedown", (evt) => {
+overlayCanvas.addEventListener("pointerdown", (evt) => {
   if (!state.pages.length) return;
   const { x, y } = canvasCoords(evt);
 
@@ -864,6 +902,8 @@ overlayCanvas.addEventListener("mousedown", (evt) => {
     const hit = hitTestBox(x, y, state.editingBox);
     if (hit) {
       state.boxDrag = { ...hit, startX: x, startY: y, orig: { ...state.editingBox } };
+      overlayCanvas.setPointerCapture(evt.pointerId);
+      evt.preventDefault();
       return;
     }
     cancelEditingBox();
@@ -871,9 +911,11 @@ overlayCanvas.addEventListener("mousedown", (evt) => {
 
   if (!isDragSelectMode()) return;
   state.selecting = { x0: x, y0: y };
+  overlayCanvas.setPointerCapture(evt.pointerId);
+  evt.preventDefault();
 });
 
-window.addEventListener("mousemove", (evt) => {
+overlayCanvas.addEventListener("pointermove", (evt) => {
   if (state.boxDrag) {
     const { x, y } = canvasCoords(evt);
     const d = state.boxDrag;
@@ -911,7 +953,7 @@ window.addEventListener("mousemove", (evt) => {
   ctx.strokeRect(Math.min(x0, x), Math.min(y0, y), Math.abs(x - x0), Math.abs(y - y0));
 });
 
-window.addEventListener("mouseup", (evt) => {
+overlayCanvas.addEventListener("pointerup", (evt) => {
   if (state.boxDrag) { state.boxDrag = null; return; }
   if (!state.selecting || !isDragSelectMode()) return;
   const { x, y } = canvasCoords(evt);
