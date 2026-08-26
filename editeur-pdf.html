@@ -404,6 +404,9 @@ const state = {
   clipboard: null,     // { canvas, w, h } zone copiée
   pastePreview: null,  // {x,y} centre du collage en attente de validation (ajustable)
   pastePreviewDrag: null, // {startX, startY, origX, origY} pendant un ajustement au glisser
+  lastCommitted: null, // {x0,y0,x1,y1} dernier collage validé — encore "ramassable" pour le déplacer sans doublon
+  movingExisting: false, // true pendant le déplacement d'un collage déjà validé (évite un double undo)
+  pickedUpFrom: null, // {x0,y0,x1,y1} position d'origine du collage en cours de déplacement (pour le rendre à nouveau "ramassable" si on annule)
   zoom: 1,             // niveau de zoom d'affichage (1 = ajusté à la fenêtre)
   editingBox: null,    // {x0,y0,x1,y1} rectangle en cours d'ajustement (mode "free"/"erase")
   boxDrag: null,       // {type:"move"|"resize", handle?, startX, startY, orig} pendant un déplacement/redimensionnement
@@ -492,6 +495,9 @@ el("btnModeCopy").addEventListener("click", () => {
     state.copyStep = "source";
     state.pastePreview = null;
     state.pastePreviewDrag = null;
+    state.lastCommitted = null;
+    state.movingExisting = false;
+    state.pickedUpFrom = null;
     el("boxActions").style.display = "none";
     clearOverlay();
     updateCopyStatus();
@@ -765,6 +771,9 @@ function renderCurrentPage() {
   state.boxDrag = null;
   state.pastePreview = null;
   state.pastePreviewDrag = null;
+  state.lastCommitted = null;
+  state.movingExisting = false;
+  state.pickedUpFrom = null;
   el("boxActions").style.display = "none";
 
   const p = state.pages[state.pageIndex];
@@ -849,6 +858,9 @@ function setMode(mode) {
   state.boxDrag = null;
   state.pastePreview = null;
   state.pastePreviewDrag = null;
+  state.lastCommitted = null;
+  state.movingExisting = false;
+  state.pickedUpFrom = null;
   el("boxActions").style.display = "none";
   state.mode = mode;
   el("btnModeFree").style.borderColor = mode === "free" ? "var(--accent)" : "var(--border)";
@@ -870,7 +882,7 @@ function updateCopyStatus() {
   status.style.display = "block";
   status.textContent = state.copyStep === "source"
     ? "Dessine un rectangle autour de la zone à copier (ex : une croix déjà cochée)."
-    : "Zone copiée ✓ — tape à l'endroit où la coller, ajuste sa position (glisser ou flèches du clavier), puis valide avec ✓ ou la touche Entrée. Tu peux coller plusieurs fois.";
+    : "Zone copiée ✓ — tape à l'endroit où la coller, ajuste (glisser ou flèches), valide avec ✓ ou Entrée. Pour la repositionner ensuite, clique dessus (elle se déplace sans doublon) ; clique ailleurs pour en poser une nouvelle copie.";
 }
 
 function clearOverlay() {
@@ -979,6 +991,34 @@ overlayCanvas.addEventListener("pointerdown", (evt) => {
         return;
       }
     }
+
+    if (state.lastCommitted) {
+      const lc = state.lastCommitted;
+      if (x >= lc.x0 && x <= lc.x1 && y >= lc.y0 && y <= lc.y1) {
+        // clic sur le dernier collage déjà validé : on le "ramasse" pour le
+        // déplacer — on l'efface de la page réelle (en restaurant le papier
+        // autour) et on repart avec un aperçu flottant, sans laisser de doublon.
+        pushUndo();
+        const pageCtx = state.pages[state.pageIndex].ctx;
+        const fill = sampleBackground(pageCtx, lc);
+        pageCtx.fillStyle = fill;
+        pageCtx.fillRect(lc.x0, lc.y0, lc.x1 - lc.x0, lc.y1 - lc.y0);
+        invalidateOcrCache(state.pageIndex);
+        baseCanvas.getContext("2d").drawImage(state.pages[state.pageIndex].canvas, 0, 0);
+
+        const cx = (lc.x0 + lc.x1) / 2, cy = (lc.y0 + lc.y1) / 2;
+        state.pastePreview = { x: cx, y: cy };
+        state.pastePreviewDrag = { startX: x, startY: y, origX: cx, origY: cy };
+        state.movingExisting = true;
+        state.pickedUpFrom = { ...lc };
+        state.lastCommitted = null;
+        overlayCanvas.setPointerCapture(evt.pointerId);
+        drawPastePreview();
+        evt.preventDefault();
+        return;
+      }
+    }
+
     // premier placement (ou nouveau placement ailleurs) : pose un aperçu, ajustable
     // immédiatement dans le même geste avant même de relâcher le doigt/la souris.
     state.pastePreview = { x, y };
@@ -1092,6 +1132,9 @@ function captureClipboard(box) {
 
   state.clipboard = { canvas: clip, w, h };
   state.copyStep = "target";
+  state.lastCommitted = null;
+  state.movingExisting = false;
+  state.pickedUpFrom = null;
   clearOverlay();
   updateCopyStatus();
 }
@@ -1130,23 +1173,39 @@ function commitPastePreview() {
   const pv = state.pastePreview;
   const clip = state.clipboard;
   if (!pv || !clip) return;
-  pushUndo();
+  if (!state.movingExisting) pushUndo(); // si on déplace un collage déjà validé, l'annulation a déjà été enregistrée au moment du "ramassage"
   const ctx = state.pages[state.pageIndex].ctx;
   ctx.drawImage(clip.canvas, pv.x - clip.w / 2, pv.y - clip.h / 2);
   invalidateOcrCache(state.pageIndex);
+  const committedRect = { x0: pv.x - clip.w / 2, y0: pv.y - clip.h / 2, x1: pv.x + clip.w / 2, y1: pv.y + clip.h / 2 };
   state.pastePreview = null;
   state.pastePreviewDrag = null;
+  state.movingExisting = false;
+  state.pickedUpFrom = null;
   renderCurrentPage();
   state.mode = "copy";
   state.copyStep = "target";
+  state.lastCommitted = committedRect; // reste "ramassable" pour un futur ajustement, sans créer de doublon
   updateCopyStatus();
 }
 
 function cancelPastePreview() {
+  const wasMoving = state.movingExisting;
+  const restoreRect = state.pickedUpFrom;
   state.pastePreview = null;
   state.pastePreviewDrag = null;
+  state.movingExisting = false;
+  state.pickedUpFrom = null;
   el("boxActions").style.display = "none";
-  clearOverlay();
+  if (wasMoving) {
+    // le "ramassage" avait déjà effacé l'ancien emplacement sur la vraie page :
+    // annuler restaure directement cet état d'avant (la croix revient à sa place),
+    // et elle redevient aussitôt "ramassable" au même endroit.
+    undo();
+    state.lastCommitted = restoreRect || null;
+  } else {
+    clearOverlay();
+  }
 }
 
 // Déplace l'aperçu de collage (ou la zone libre en cours d'ajustement) de
