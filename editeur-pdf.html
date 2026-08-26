@@ -253,6 +253,7 @@
   <button id="btnModeFree" disabled>Zone libre</button>
   <button id="btnModeOcr" disabled>OCR (cliquer un mot)</button>
   <button id="btnModeCopy" disabled>Copier-coller</button>
+  <button id="btnModeErase" disabled title="Efface une zone (redonne la couleur du papier autour)">🧹 Gomme</button>
   <div class="sep"></div>
   <button id="btnUndo" disabled>Annuler dernière modif</button>
   <div class="spacer"></div>
@@ -289,7 +290,9 @@
       Ouvre un PDF scanné pour commencer.<br><br>
       Ensuite, dessine un rectangle avec la souris sur la zone à corriger,
       passe en mode OCR pour cliquer directement sur un mot détecté,
-      ou en mode "Copier-coller" pour dupliquer une croix/coche déjà présente ailleurs.
+      en mode "Copier-coller" pour dupliquer une croix/coche déjà présente ailleurs,
+      ou en mode "Gomme" pour effacer une zone (utile pour retirer un collage
+      mal placé) sans rien avoir à retaper.
       <br><br>
       Depuis les miniatures à gauche : fais glisser une page pour la réordonner
       (ou utilise les flèches ▲▼ au doigt), survole-la ou tape dessus pour la
@@ -392,7 +395,7 @@ const RENDER_SCALE = 2.2; // qualité de travail (~200 dpi)
 const state = {
   pages: [],        // { canvas: HTMLCanvasElement, ctx }
   pageIndex: 0,
-  mode: "free",      // "free" | "ocr" | "copy"
+  mode: "free",      // "free" | "ocr" | "copy" | "erase"
   undoStack: [],     // { pageIndex, imageData }
   ocrWords: [],       // boîtes détectées de la page courante
   selecting: null,    // {x0,y0} en coordonnées réelles pendant un drag
@@ -402,7 +405,7 @@ const state = {
   pastePreview: null,  // {x,y} centre du collage en attente de validation (ajustable)
   pastePreviewDrag: null, // {startX, startY, origX, origY} pendant un ajustement au glisser
   zoom: 1,             // niveau de zoom d'affichage (1 = ajusté à la fenêtre)
-  editingBox: null,    // {x0,y0,x1,y1} rectangle en cours d'ajustement (mode "free")
+  editingBox: null,    // {x0,y0,x1,y1} rectangle en cours d'ajustement (mode "free"/"erase")
   boxDrag: null,       // {type:"move"|"resize", handle?, startX, startY, orig} pendant un déplacement/redimensionnement
 };
 
@@ -432,7 +435,11 @@ el("boxConfirm").addEventListener("click", () => {
   const box = state.editingBox;
   state.editingBox = null;
   el("boxActions").style.display = "none";
-  openModalForBox(box, "");
+  if (state.mode === "erase") {
+    eraseBox(box);
+  } else {
+    openModalForBox(box, "");
+  }
 });
 el("boxCancel").addEventListener("click", () => {
   if (state.pastePreview) {
@@ -477,6 +484,7 @@ document.addEventListener("keydown", (evt) => {
 });
 el("btnModeFree").addEventListener("click", () => setMode("free"));
 el("btnModeOcr").addEventListener("click", () => setMode("ocr"));
+el("btnModeErase").addEventListener("click", () => setMode("erase"));
 el("btnModeCopy").addEventListener("click", () => {
   if (state.mode === "copy") {
     // déjà en mode copier-coller : on repart sur une nouvelle copie
@@ -561,7 +569,7 @@ function resetEditingState() {
 function enableMainUi() {
   placeholder.style.display = "none";
   stage.style.display = "block";
-  ["btnSave", "btnPrev", "btnNext", "btnModeFree", "btnModeOcr", "btnModeCopy", "btnZoomOut", "btnZoomIn", "btnRotatePage"].forEach(id => el(id).disabled = false);
+  ["btnSave", "btnPrev", "btnNext", "btnModeFree", "btnModeOcr", "btnModeCopy", "btnModeErase", "btnZoomOut", "btnZoomIn", "btnRotatePage"].forEach(id => el(id).disabled = false);
   el("searchableLabel").style.display = "inline-flex";
   el("toolbar2").style.display = "flex";
 }
@@ -846,6 +854,7 @@ function setMode(mode) {
   el("btnModeFree").style.borderColor = mode === "free" ? "var(--accent)" : "var(--border)";
   el("btnModeOcr").style.borderColor = mode === "ocr" ? "var(--accent)" : "var(--border)";
   el("btnModeCopy").style.borderColor = mode === "copy" ? "var(--accent)" : "var(--border)";
+  el("btnModeErase").style.borderColor = mode === "erase" ? "var(--accent)" : "var(--border)";
   clearOverlay();
   el("copyStatus").style.display = "none";
   if (mode === "ocr") runOcr();
@@ -880,12 +889,12 @@ function canvasCoords(evt) {
 }
 
 function isDragSelectMode() {
-  return state.mode === "free" || (state.mode === "copy" && state.copyStep === "source");
+  return state.mode === "free" || state.mode === "erase" || (state.mode === "copy" && state.copyStep === "source");
 }
 
 // ------------------------------------------------ ajuster une sélection --
-// Après un premier tracé en mode "Zone libre", le rectangle reste modifiable
-// (déplacement, redimensionnement par les coins) avant de valider la modale.
+// Après un premier tracé en mode "Zone libre"/"Gomme", le rectangle reste
+// modifiable (déplacement, redimensionnement par les coins) avant de valider.
 function getDisplayScale() {
   // pixels "canvas" (résolution réelle) par pixel CSS affiché — dépend du zoom courant.
   const rect = overlayCanvas.getBoundingClientRect();
@@ -947,7 +956,7 @@ overlayCanvas.addEventListener("pointerdown", (evt) => {
   if (!state.pages.length) return;
   const { x, y } = canvasCoords(evt);
 
-  if (state.mode === "free" && state.editingBox) {
+  if ((state.mode === "free" || state.mode === "erase") && state.editingBox) {
     const hit = hitTestBox(x, y, state.editingBox);
     if (hit) {
       state.boxDrag = { ...hit, startX: x, startY: y, orig: { ...state.editingBox } };
@@ -1051,9 +1060,8 @@ overlayCanvas.addEventListener("pointerup", (evt) => {
   };
   if (box.x1 - box.x0 < 4 || box.y1 - box.y0 < 4) { clearOverlay(); return; }
 
-  if (state.mode === "free") {
-    // Le rectangle reste ajustable (déplacer / redimensionner) avant de valider,
-    // au lieu d'ouvrir directement la modale.
+  if (state.mode === "free" || state.mode === "erase") {
+    // Le rectangle reste ajustable (déplacer / redimensionner) avant de valider.
     state.editingBox = box;
     drawEditingBox();
   } else {
@@ -1317,6 +1325,20 @@ function applyModal() {
   renderCurrentPage();
 }
 
+// Efface une zone en la remplissant avec la couleur de papier détectée sur son
+// pourtour — sans ouvrir la fenêtre de correction. Utilisé pour retirer un
+// tampon/croix mal placé (ex : collé dans la mauvaise case).
+function eraseBox(box) {
+  pushUndo();
+  const ctx = state.pages[state.pageIndex].ctx;
+  const fill = sampleBackground(ctx, box);
+  ctx.fillStyle = fill;
+  ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+  state.ocrWords = [];
+  invalidateOcrCache(state.pageIndex);
+  renderCurrentPage();
+}
+
 // ----------------------------------------------------------------- undo --
 // Deux types d'entrées dans la pile : "image" (une correction de zone —
 // mêmes dimensions de page, restaurée par pixels) et "canvas" (une rotation —
@@ -1409,7 +1431,7 @@ function deletePage(idx) {
     state.pageIndex = 0;
     placeholder.style.display = "";
     stage.style.display = "none";
-    ["btnSave", "btnPrev", "btnNext", "btnModeFree", "btnModeOcr", "btnModeCopy", "btnZoomOut", "btnZoomIn", "btnRotatePage"].forEach(id => el(id).disabled = true);
+    ["btnSave", "btnPrev", "btnNext", "btnModeFree", "btnModeOcr", "btnModeCopy", "btnModeErase", "btnZoomOut", "btnZoomIn", "btnRotatePage"].forEach(id => el(id).disabled = true);
     el("searchableLabel").style.display = "none";
     el("toolbar2").style.display = "none";
     renderThumbnails();
